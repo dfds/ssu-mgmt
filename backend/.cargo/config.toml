@@ -1,0 +1,2 @@
+[registries]
+seqtf = { index = "sparse+https://crates.juna.seq.tf/api/v1/crates/" }

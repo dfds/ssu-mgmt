@@ -1,0 +1,21 @@
+version: '3.7'
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+    image: postgres:latest
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=p
+    healthcheck:
+      test: "pg_isready -h localhost -p 5432 -U postgres"
+      interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  db-data:
