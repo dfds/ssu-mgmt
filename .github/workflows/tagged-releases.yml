@@ -33,6 +33,6 @@ jobs:
         with:
           push: true
           context: backend
-          tags: dfdsdk/ssu-mgmt:${{ steps.vars.outputs.tag }}
+          tags: dfdsdk/ssu-mgmt:${{ steps.vars.outputs.tag }},dfdsdk/ssu-mgmt:latest
           cache-from: type=registry,ref=dfdsdk/ssu-mgmt:buildcache-tag
           cache-to: type=registry,ref=dfdsdk/ssu-mgmt:buildcache-tag,mode=max
