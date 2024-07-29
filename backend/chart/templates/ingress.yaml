@@ -1,0 +1,84 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "ssu-mgmt.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ssu-mgmt.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  entryPoints: []
+  routes:
+  {{- if .Values.ingress.routes -}}
+  {{- with .Values.ingress.routes }}
+    {{- toYaml . | nindent 4}}
+
+  {{- end }}
+
+  {{ else }}
+
+  {{- if .Values.ingress.matches }}
+    {{- range .Values.ingress.matches }}
+    - kind: Rule
+      match: {{ .match }}
+      {{- if .priority }}
+      priority: {{ .priority }}
+      {{- end }}
+      services:
+        - kind: Service
+          name: {{ include "ssu-mgmt.fullname" $ }}
+          namespace: {{ $.Release.Namespace }}
+          port: external
+      {{- if .prefix }}
+      middlewares:
+        - name: {{ .name }}
+          namespace: {{ $.Release.Namespace }}
+      {{- end }}
+    {{- end }}
+  {{- else }}
+    - kind: Rule
+      match: {{ .Values.ingress.match }}
+      {{- with .Values.ingress.middlewares }}
+      middlewares:
+        {{- toYaml . | nindent 8}}
+      {{- end }}
+      {{- if .Values.ingress.services -}}
+      {{- with .Values.ingress.services }}
+      services:
+        {{- toYaml . | nindent 8}}
+      {{- end }}
+      {{ else }}
+      services:
+        - kind: Service
+          name: {{ include "ssu-mgmt.fullname" . }}
+          namespace: {{ .Release.Namespace }}
+          port: external
+      {{- end }}
+  {{- end }}
+
+  {{- end }}
+
+{{- end }}
+
+{{- if .Values.ingress.matches }}
+{{- range .Values.ingress.matches }}
+{{- if .prefix}}
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  stripPrefix:
+    prefixes:
+      - {{ .prefix }}
+{{- end }}
+{{- end }}
+{{- end }}
