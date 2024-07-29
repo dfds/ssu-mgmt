@@ -52,12 +52,13 @@ async fn offset_updater(ct : CancellationToken, offset_tracker: OffsetTracker) -
     }
     let m_consumer = consumer::create_consumer(offset_tracker.clone())?;
     let mut tpl = TopicPartitionList::new();
-    for x in offset_tracker.offsets.as_ref() {
-        tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
-        tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
+    if offset_tracker.offsets.len() > 0 {
+        for x in offset_tracker.offsets.as_ref() {
+            tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
+            tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
+        }
+        m_consumer.commit(&tpl, CommitMode::Sync).unwrap();
     }
-
-    m_consumer.commit(&tpl, CommitMode::Sync).unwrap();
 
     new_ofu(ct, offset_tracker);
 
