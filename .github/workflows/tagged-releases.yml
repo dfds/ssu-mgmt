@@ -1,0 +1,37 @@
+name: CI tagged release
+
+on:
+  push:
+    tags:
+      - 'backend/v*'
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      - name: Set outputs
+        id: vars
+        env:
+          REF_NAME: ${{github.ref_name}}
+        run: |
+          export sanitised_tag=$(echo $REF_NAME | sed 's/backend\/v//g')
+          echo "tag=$(echo $sanitised_tag)" >> $GITHUB_OUTPUT
+        shell: bash
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Login to DockerHub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          context: backend
+          tags: dfdsdk/ssu-mgmt:${{ steps.vars.outputs.tag }}
+          cache-from: type=registry,ref=dfdsdk/ssu-mgmt:buildcache-tag
+          cache-to: type=registry,ref=dfdsdk/ssu-mgmt:buildcache-tag,mode=max
