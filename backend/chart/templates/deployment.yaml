@@ -10,6 +10,9 @@ spec:
   selector:
     matchLabels:
       {{- include "ssu-mgmt.selectorLabels" . | nindent 6 }}
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
   template:
     metadata:
       {{- with .Values.podAnnotations }}
