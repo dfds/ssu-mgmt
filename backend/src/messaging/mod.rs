@@ -89,16 +89,18 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                     for x in context.offset_tracker.offsets.as_ref() {
                         trace!("partition: {} -> offset: {}", x.key(), x.value());
                     }
-                    let mut tpl = TopicPartitionList::new();
-                    for x in context.offset_tracker.offsets.as_ref() {
-                        tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
-                        tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
-                    }
+                    if context.offset_tracker.offsets.len() > 0 {
+                        let mut tpl = TopicPartitionList::new();
+                        for x in context.offset_tracker.offsets.as_ref() {
+                            tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
+                            tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
+                        }
 
-                    consumer.commit(&tpl, CommitMode::Sync).unwrap_or_else(|err| {
-                        error!("{:?}", err);
-                        ()
-                    });
+                        consumer.commit(&tpl, CommitMode::Sync).unwrap_or_else(|err| {
+                            error!("{:?}", err);
+                            ()
+                        });
+                    }
                     last_offset_update_time = chrono::Utc::now().naive_utc();
                 }
             }
