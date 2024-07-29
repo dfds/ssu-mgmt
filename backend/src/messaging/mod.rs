@@ -94,7 +94,10 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                         tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
                     }
 
-                    consumer.commit(&tpl, CommitMode::Sync).unwrap();
+                    consumer.commit(&tpl, CommitMode::Sync).unwrap_or_else(|err| {
+                        error!("{:?}", err);
+                        ()
+                    });
                     last_offset_update_time = chrono::Utc::now().naive_utc();
                 }
             }
