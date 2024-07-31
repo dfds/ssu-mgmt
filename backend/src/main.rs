@@ -68,7 +68,12 @@ async fn main() {
 
         std::thread::spawn(move || {
             // event consumer
-            aw_rt.spawn(messaging::start_messaging(aw_rt_cancel_token.clone(), context));
+            if conf.enable_messaging_ingest {
+                info!("Messaging ingest enabled");
+                aw_rt.spawn(messaging::start_messaging(aw_rt_cancel_token.clone(), context));
+            } else {
+                info!("Messaging ingest disabled");
+            }
         });
 
         cs.wait();

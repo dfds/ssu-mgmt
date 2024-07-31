@@ -12,6 +12,7 @@ pub struct Config {
     pub metrics_port : u16,
     pub metrics_listen_address : String,
     pub api_enable_auth : bool,
+    pub enable_messaging_ingest : bool,
     pub auth : Auth,
     pub auth_jwks_url : Option<String>,
     pub cache_implementation : String,
@@ -55,6 +56,7 @@ fn set_defaults(builder : ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultS
         .set_default("metrics_listen_address", "0.0.0.0").unwrap()
         .set_default("log_level", "info").unwrap()
         .set_default("api_enable_auth", "true").unwrap()
+        .set_default("enable_messaging_ingest", "true").unwrap()
         .set_default("cache_implementation", "inmemory").unwrap()
         .set_default("messaging.group_id", "ssu-mgmt").unwrap()
         .set_default("messaging.bootstrap_servers", "").unwrap()
