@@ -65,7 +65,7 @@ async fn api_fallback() -> impl IntoResponse {
     StatusCode::NOT_FOUND
 }
 
-async fn default_headers(request: Request<Body>, next: Next) -> Response {
+pub async fn default_headers(request: Request<Body>, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert("server", "ssu-mgmt".parse().unwrap());
     response

@@ -11,6 +11,8 @@ pub struct Config {
     pub api_listen_address : String,
     pub metrics_port : u16,
     pub metrics_listen_address : String,
+    pub health_port : u16,
+    pub health_listen_address : String,
     pub api_enable_auth : bool,
     pub enable_messaging_ingest : bool,
     pub auth : Auth,
@@ -54,6 +56,8 @@ fn set_defaults(builder : ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultS
         .set_default("api_listen_address", "0.0.0.0").unwrap()
         .set_default("metrics_port", 9000).unwrap()
         .set_default("metrics_listen_address", "0.0.0.0").unwrap()
+        .set_default("health_port", 9001).unwrap()
+        .set_default("health_listen_address", "0.0.0.0").unwrap()
         .set_default("log_level", "info").unwrap()
         .set_default("api_enable_auth", "true").unwrap()
         .set_default("enable_messaging_ingest", "true").unwrap()

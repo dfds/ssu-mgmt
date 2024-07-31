@@ -2,7 +2,6 @@ mod misc;
 mod api;
 mod messaging;
 mod service;
-
 pub mod schema;
 mod db;
 
@@ -16,6 +15,7 @@ use tokio::net::TcpListener;
 use crate::api::{api_router, start_server, WebState};
 use crate::messaging::offset_tracker::new_offset_tracker;
 use crate::misc::config::load_conf;
+use crate::misc::health::start_health;
 
 #[tokio::main]
 async fn main() {
@@ -36,6 +36,7 @@ async fn main() {
 
     let cancel_signal = bs_resp.shutdown_signal.unwrap();
     start_server(cancel_signal.clone(), format!("{}:{}", conf.api_listen_address, conf.api_port));
+    start_health(cancel_signal.clone(),format!("{}:{}", conf.health_listen_address, conf.health_port) );
 
     // async setup
     let async_worker_runtime_cancel_token = tokio_util::sync::CancellationToken::new();
