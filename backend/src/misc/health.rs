@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
@@ -45,6 +46,7 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
 #[derive(Clone)]
 pub struct HealthState {
     inner: Inner,
+    pub checks : Arc<RwLock<HashMap<String, bool>>>
 }
 
 #[derive(Clone)]
@@ -67,9 +69,39 @@ impl HealthState {
         self.inner.live.load(Acquire)
     }
 
-    pub fn refresh(&self) {
+    pub fn refresh_all(&self) {
+        let mut ready = true;
+        let ready_keys = vec!["api_ready"];
+
+        for key in ready_keys {
+            if *self.checks.read().unwrap().get(key).unwrap_or(&false) == false {
+                ready = false;
+            }
+        }
+
+        self.refresh_healthy();
+        self.refresh_ready();
+        self.refresh_live();
+    }
+
+    pub fn refresh_healthy(&self) {
         self.inner.healthy.store(true, Release);
-        self.inner.ready.store(true, Release);
+    }
+
+    pub fn refresh_ready(&self) {
+        let mut ready = true;
+        let ready_keys = vec!["api_ready"];
+
+        for key in ready_keys {
+            if *self.checks.read().unwrap().get(key).unwrap_or(&false) == false {
+                ready = false;
+            }
+        }
+
+        self.inner.ready.store(ready, Release);
+    }
+
+    pub fn refresh_live(&self) {
         self.inner.live.store(true, Release);
     }
 
@@ -79,7 +111,8 @@ impl HealthState {
                 healthy: Arc::new(AtomicBool::new(false)),
                 ready: Arc::new(AtomicBool::new(false)),
                 live: Arc::new(AtomicBool::new(false)),
-            }
+            },
+            checks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

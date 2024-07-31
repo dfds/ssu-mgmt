@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use crate::api::controllers::add_controllers;
 use crate::misc::config::load_conf;
+use crate::misc::health::HealthState;
 use crate::misc::services::ServicesShared;
 
 pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: ServicesShared, listen_addr : String) {
@@ -42,6 +43,12 @@ pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
                 .layer(axum::middleware::from_fn(default_headers));
 
             let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
+
+            {
+                let hs = ss.read().unwrap().get_service_clone::<HealthState>().unwrap();
+                hs.checks.write().unwrap().insert("api_ready".to_owned(), true);
+                hs.refresh_ready();
+            }
             axum::serve(listener, app).with_graceful_shutdown(shutdown.exit)
                 .await.unwrap();
         });
