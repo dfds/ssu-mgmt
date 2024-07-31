@@ -13,7 +13,9 @@ use crate::messaging::handlers::register_handlers;
 use crate::messaging::model::{Context, Envelope};
 use crate::messaging::offset_tracker::OffsetTracker;
 use crate::messaging::registry::{new_registry, Registry};
+use crate::misc;
 use crate::misc::error::SsuResult;
+use crate::misc::services::ServicesShared;
 
 pub mod consumer;
 pub mod config;
@@ -22,10 +24,12 @@ pub mod registry;
 pub mod handlers;
 pub mod offset_tracker;
 
-pub async fn start_messaging(ct : CancellationToken, context: crate::misc::context::Context) -> SsuResult<()> {
+pub const SS_CONTEXT_NAME : &str = "MESSAGING_CONTEXT";
+
+pub async fn start_messaging(ct : CancellationToken, ss: ServicesShared) -> SsuResult<()> {
+    let context = ss.read().unwrap().get_named_service_clone::<misc::context::Context>(SS_CONTEXT_NAME).unwrap();
     let mut registry = new_registry();
     register_handlers(&mut registry);
-    //let m_consumer = consumer::create_consumer(context.offset_tracker.clone())?;
     let m_consumer = consumer::create_consumer_base(context.offset_tracker.clone())?;
     m_consumer.subscribe(&["cloudengineering.selfservice.audit"])?;
 
@@ -36,40 +40,10 @@ pub async fn start_messaging(ct : CancellationToken, context: crate::misc::conte
        consumer_loop_base(m_consumer, ct.clone(), context.clone(), registry);
     });
 
-
-    // handle.await;
-    // consumer_loop(m_consumer).await;
-
     Ok(())
 }
 
-async fn offset_updater(ct : CancellationToken, offset_tracker: OffsetTracker) -> SsuResult<()> {
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    // offset tracker stats
-    info!("offset tracker stats");
-    for x in offset_tracker.offsets.as_ref() {
-        info!("partition: {} -> offset: {}", x.key(), x.value());
-    }
-    let m_consumer = consumer::create_consumer(offset_tracker.clone())?;
-    let mut tpl = TopicPartitionList::new();
-    if offset_tracker.offsets.len() > 0 {
-        for x in offset_tracker.offsets.as_ref() {
-            tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
-            tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
-        }
-        m_consumer.commit(&tpl, CommitMode::Sync).unwrap();
-    }
-
-    new_ofu(ct, offset_tracker);
-
-    Ok(())
-}
-
-fn new_ofu(ct : CancellationToken, offset_tracker: OffsetTracker) {
-    tokio::spawn(offset_updater(ct, offset_tracker));
-}
-
-fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : CancellationToken, context: crate::misc::context::Context, registry: Registry) {
+fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : CancellationToken, context: misc::context::Context, registry: Registry) {
     let mut last_offset_update_time = chrono::Utc::now().naive_utc();
 
     loop {
@@ -159,7 +133,7 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
     }
 }
 
-async fn consumer_loop(consumer : StreamConsumer<CustomConsumerContext>, ct : CancellationToken, context: crate::misc::context::Context, registry: Registry) {
+async fn consumer_loop(consumer : StreamConsumer<CustomConsumerContext>, ct : CancellationToken, context: misc::context::Context, registry: Registry) {
     loop {
         tokio::select! {
             _ = ct.cancelled() => {

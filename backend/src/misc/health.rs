@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
@@ -9,10 +10,10 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use crate::api::{api_router, WebState};
 use crate::misc::config::load_conf;
+use crate::misc::services::{Services, ServicesShared};
 
-pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, listen_addr : String) -> HealthState {
-    let hs = HealthState::new();
-    // hs.refresh();
+pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: ServicesShared, listen_addr : String) {
+    let hs = ss.read().unwrap().get_service::<HealthState>().unwrap();
 
     let _hs = hs.clone();
     std::thread::spawn(move || {
@@ -31,7 +32,7 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, listen_addr 
                 .route("/health", axum::routing::get(health))
                 .route("/ready", axum::routing::get(readiness))
                 .route("/live", axum::routing::get(liveness))
-                .with_state(_hs)
+                .with_state(_hs.deref().clone())
                 .layer(axum::middleware::from_fn(crate::api::default_headers));
 
             let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
@@ -39,8 +40,6 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, listen_addr 
                 .await.unwrap();
         });
     });
-
-    hs
 }
 
 #[derive(Clone)]

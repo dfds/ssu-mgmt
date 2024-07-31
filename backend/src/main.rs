@@ -15,7 +15,7 @@ use tokio::net::TcpListener;
 use crate::api::{api_router, start_server, WebState};
 use crate::messaging::offset_tracker::new_offset_tracker;
 use crate::misc::config::load_conf;
-use crate::misc::health::start_health;
+use crate::misc::health::{HealthState, start_health};
 
 #[tokio::main]
 async fn main() {
@@ -33,10 +33,10 @@ async fn main() {
 
     db::init(&conf.db).unwrap();
 
-
+    let ss = misc::services::init();
     let cancel_signal = bs_resp.shutdown_signal.unwrap();
-    start_server(cancel_signal.clone(), format!("{}:{}", conf.api_listen_address, conf.api_port));
-    start_health(cancel_signal.clone(),format!("{}:{}", conf.health_listen_address, conf.health_port) );
+    start_server(cancel_signal.clone(), ss.clone(), format!("{}:{}", conf.api_listen_address, conf.api_port));
+    start_health(cancel_signal.clone(), ss.clone(),format!("{}:{}", conf.health_listen_address, conf.health_port) );
 
     // async setup
     let async_worker_runtime_cancel_token = tokio_util::sync::CancellationToken::new();
@@ -48,6 +48,7 @@ async fn main() {
     // bg setup
     let (bg_s, bg_r) = crossbeam::channel::unbounded::<service::bg::Message>();
     let offset_tracker = new_offset_tracker();
+    ss.write().unwrap().add_service(offset_tracker.clone());
 
     // bg work
     service::bg::start(cs.clone(), bg_s.clone(), bg_r.clone(), offset_tracker.clone());
@@ -57,6 +58,7 @@ async fn main() {
         bg_sender: bg_s.clone(),
         bg_receiver: bg_r.clone(),
     };
+    ss.write().unwrap().add_named_service(context.clone(), messaging::SS_CONTEXT_NAME);
 
     // async bg work
     std::thread::spawn(move || {
@@ -71,7 +73,7 @@ async fn main() {
             // event consumer
             if conf.enable_messaging_ingest {
                 info!("Messaging ingest enabled");
-                aw_rt.spawn(messaging::start_messaging(aw_rt_cancel_token.clone(), context));
+                aw_rt.spawn(messaging::start_messaging(aw_rt_cancel_token.clone(), ss.clone()));
             } else {
                 info!("Messaging ingest disabled");
             }

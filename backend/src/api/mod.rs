@@ -15,8 +15,9 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use crate::api::controllers::add_controllers;
 use crate::misc::config::load_conf;
+use crate::misc::services::ServicesShared;
 
-pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, listen_addr : String) {
+pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: ServicesShared, listen_addr : String) {
     std::thread::spawn(move || {
         let _s = shutdown.clone();
         info!("Starting API server");
