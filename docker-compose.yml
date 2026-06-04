@@ -17,7 +17,7 @@ services:
       retries: 5
       start_period: 30s
   kafka:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.3.5
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.6
     command:
       - redpanda
       - start
@@ -35,11 +35,6 @@ services:
       # Redpanda brokers use the RPC API to communicate with each other internally.
       - --rpc-addr kafka:33145
       - --advertise-rpc-addr kafka:33145
-      # Mode dev-container uses well-known configuration properties for development in containers.
-      - --mode dev-container
-      # Tells Seastar (the framework Redpanda uses under the hood) to use 1 core on the system.
-      - --smp 1
-      - --default-log-level=info
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
       interval: 15s
@@ -48,28 +43,27 @@ services:
       start_period: 5s
     ports:
       - "9092:9092"
+      - "19092:19092"
     networks:
       ssu-mgmt-development:
         aliases:
           - kafka
   redpanda-console:
-    image: docker.redpanda.com/redpandadata/console:v2.8.2
+    image: docker.redpanda.com/redpandadata/console:v3.5.1
     networks:
       ssu-mgmt-development:
         aliases:
           - redpanda-console
     entrypoint: /bin/sh
-    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console -config.filepath=${CONFIG_FILEPATH:-/tmp/config.yml}'
-    volumes:
-      - ./redpanda-config:/tmp/config/
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console'
     environment:
-      CONFIG_FILEPATH: ${CONFIG_FILEPATH:-/tmp/config.yml}
+      CONFIG_FILEPATH: /tmp/config.yml
       CONSOLE_CONFIG_FILE: |
         kafka:
           brokers: ["kafka:9092"]
-          schemaRegistry:
-            enabled: true
-            urls: ["http://kafka:8081"]
+        schemaRegistry:
+          enabled: true
+          urls: ["http://kafka:8081"]
         redpanda:
           adminApi:
             enabled: true
