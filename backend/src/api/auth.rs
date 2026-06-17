@@ -7,7 +7,12 @@ use serde_json::Value;
 use crate::api::WebSharedState;
 use tower_layer::Layer;
 
-pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): OriginalUri, request: Request<Body>, next: Next) -> Response {
+pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): OriginalUri, mut request: Request<Body>, next: Next) -> Response {
+    // Public bypass: OIDC bootstrap endpoint must be reachable without a token.
+    if uri.path() == "/api/auth/config" {
+        return next.run(request).await;
+    }
+
     let mut token = "".to_owned();
     let auth_header = request.headers().get("authorization");
     if auth_header.is_some() {
@@ -20,38 +25,52 @@ pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): 
         }
     }
 
-    if state.asset_auth_regex.is_match(uri.path()) {
-        let response = next.run(request).await;
-        return response;
-    }
-
-    let is_api = uri.path().contains("/api");
-
     if token.eq("") {
-        if is_api {
-            return StatusCode::UNAUTHORIZED.into_response();
-        } else {
-            let mut resp = StatusCode::TEMPORARY_REDIRECT.into_response();
-            resp.headers_mut().insert("location", "/auth/".parse().unwrap());
-
-            return resp
-        }
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let auth_svc = state.jwt_validator.layer(Value::default()).auths.first().unwrap().clone();
     let valid = auth_svc.check_auth(&token).await;
 
-    if valid.is_err() {
-        if is_api {
+    match valid {
+        Ok(token_data) => {
+            request.extensions_mut().insert(token_data.claims);
+        }
+        Err(_) => {
             return StatusCode::UNAUTHORIZED.into_response();
-        } else {
-            let mut resp = StatusCode::TEMPORARY_REDIRECT.into_response();
-            resp.headers_mut().insert("location", "/auth/".parse().unwrap());
-
-            return resp
         }
     }
 
     let response = next.run(request).await;
     response
+}
+
+/// Middleware: verifies the validated JWT claims (inserted by `auth_oauth`)
+/// contain the given role under the standard AAD `roles` array claim.
+///
+/// When `api_enable_auth` is false, the check is bypassed for parity with the
+/// outer auth middleware. Attach via `from_fn_with_state(role_str, role_check)`.
+pub async fn role_check(
+    State(role): State<&'static str>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let conf = crate::misc::config::load_conf().unwrap();
+    if !conf.api_enable_auth {
+        return next.run(req).await;
+    }
+
+    let allowed = req
+        .extensions()
+        .get::<Value>()
+        .and_then(|c| c.get("roles"))
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some(role)))
+        .unwrap_or(false);
+
+    if allowed {
+        next.run(req).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
 }

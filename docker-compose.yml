@@ -2,11 +2,9 @@ version: '3.7'
 
 services:
   db:
-    ports:
-      - "5432:5432"
-    image: postgres:latest
+    image: postgres:16
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=p
@@ -41,9 +39,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
-    ports:
-      - "9092:9092"
-      - "19092:19092"
     networks:
       ssu-mgmt-development:
         aliases:
@@ -68,8 +63,6 @@ services:
           adminApi:
             enabled: true
             urls: ["http://kafka:9644"]
-    ports:
-      - 7080:8080
     depends_on:
       - kafka
 volumes:

@@ -1,6 +1,7 @@
 mod auth;
 mod controllers;
 mod misc;
+mod static_files;
 
 use std::sync::Arc;
 use axum::body::Body;
@@ -10,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use jwt_authorizer::{Authorizer, IntoLayer, JwtAuthorizer, Validation};
 use jwt_authorizer::layer::AuthorizationLayer;
 use log::{info, trace};
-use regex::Regex;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use crate::api::controllers::add_controllers;
@@ -40,6 +40,7 @@ pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
 
             let app = axum::Router::new()
                 .nest("/api", api_router(web_state.clone()))
+                .fallback_service(static_files::router())
                 .layer(axum::middleware::from_fn(default_headers));
 
             let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
@@ -60,6 +61,7 @@ pub fn api_router(state : WebSharedState) -> axum::Router {
 
     routes = routes
         .route("/global/stats", axum::routing::get(misc::get_stats))
+        .route("/auth/config", axum::routing::get(controllers::auth_config::handler))
         .fallback(axum::routing::any(api_fallback));
 
     routes = add_controllers(routes, state.clone());
@@ -93,16 +95,12 @@ pub type WebSharedState = Arc<WebState>;
 #[derive(Clone)]
 pub struct WebState {
     pub jwt_validator : AuthorizationLayer<Value>,
-    pub asset_auth_regex : Regex,
 }
 
 impl WebState {
-    pub fn new(layer : AuthorizationLayer<Value>, cache_implementation : String) -> Self {
-        let re = Regex::new(r"\/assets\/(auth-.*.js|.*.css|relativeTime.*.js)").unwrap();
-
+    pub fn new(layer : AuthorizationLayer<Value>, _cache_implementation : String) -> Self {
         Self {
             jwt_validator: layer,
-            asset_auth_regex: re,
         }
     }
 }

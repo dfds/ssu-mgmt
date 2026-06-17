@@ -1,0 +1,165 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand: #002b45;
+  --color-brand-dark: #153b53;
+  --color-action: #0e7cc1;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f2f2f2;
+  --color-surface-subtle: #eef0f1;
+
+  --color-text-primary: #002b45;
+  --color-text-secondary: #666666;
+  --color-text-muted: #afafaf;
+  --color-text-inverse: #ffffff;
+
+  --color-border-default: #d3d3d3;
+  --color-border-card: #d9dcde;
+  --color-border-divider: #eeeeee;
+
+  --color-success: #4caf50;
+  --color-warning: #ed8800;
+  --color-error: #be1e2d;
+
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-overlay: 0 8px 16px rgba(0, 0, 0, 0.2);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: "SFMono-Regular", "Fira Code", Consolas, monospace;
+}
+
+@layer base {
+  html.dark {
+    --color-surface: #1e293b;
+    --color-surface-muted: #0f172a;
+    --color-surface-subtle: #141e2b;
+    --color-text-primary: #e2e8f0;
+    --color-text-secondary: #94a3b8;
+    --color-text-muted: #64748b;
+    --color-border-default: #334155;
+    --color-border-card: #334155;
+    --color-border-divider: #1e2d3d;
+    --color-action: #60a5fa;
+    --color-brand: #e2e8f0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-surface-muted);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .btn-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2rem;
+    padding: 0 0.75rem;
+    border-radius: 5px;
+    background: var(--color-action);
+    color: #ffffff;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: filter 150ms var(--ease-out-expo), transform 150ms var(--ease-out-expo);
+  }
+  .btn-action:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-action:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .btn-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-outline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2rem;
+    padding: 0 0.75rem;
+    border-radius: 5px;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid var(--color-border-default);
+    cursor: pointer;
+    transition: background 150ms var(--ease-out-expo), border-color 150ms var(--ease-out-expo);
+  }
+  .btn-outline:hover:not(:disabled) {
+    background: var(--color-surface-muted);
+  }
+  .btn-outline:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 2rem;
+    padding: 0 0.75rem;
+    border-radius: 5px;
+    background: var(--color-error);
+    color: #ffffff;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: filter 150ms var(--ease-out-expo), transform 150ms var(--ease-out-expo);
+  }
+  .btn-danger:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-danger:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-ghost-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 150ms var(--ease-out-expo), color 150ms var(--ease-out-expo);
+  }
+  .btn-ghost-icon:hover {
+    background: var(--color-surface-muted);
+    color: var(--color-text-primary);
+  }
+}

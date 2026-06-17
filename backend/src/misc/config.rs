@@ -26,7 +26,10 @@ pub struct Config {
 pub struct Auth {
     pub issuer : String,
     pub aud : String,
-    pub oidc_url : String
+    pub oidc_url : String,
+    pub tenant_id : String,
+    pub client_id : String,
+    pub api_scope : String,
 }
 
 pub fn get_conf_path() -> String {
@@ -52,6 +55,9 @@ fn set_defaults(builder : ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultS
         .set_default("auth.issuer", "").unwrap()
         .set_default("auth.aud", "").unwrap()
         .set_default("auth.oidc_url", "").unwrap()
+        .set_default("auth.tenant_id", "").unwrap()
+        .set_default("auth.client_id", "").unwrap()
+        .set_default("auth.api_scope", "").unwrap()
         .set_default("api_port", 8080).unwrap()
         .set_default("api_listen_address", "0.0.0.0").unwrap()
         .set_default("metrics_port", 9000).unwrap()

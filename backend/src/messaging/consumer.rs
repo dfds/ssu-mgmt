@@ -19,11 +19,11 @@ pub struct CustomConsumerContext {
 impl ClientContext for CustomConsumerContext {}
 
 impl ConsumerContext for CustomConsumerContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance) {
+    fn pre_rebalance<'a>(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'a>) {
         trace!("Pre rebalance {:?}", rebalance);
     }
 
-    fn post_rebalance(&self, rebalance: &Rebalance) {
+    fn post_rebalance<'a>(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'a>) {
         match rebalance {
             Rebalance::Assign(data) => {
                 for topic in data.elements() {

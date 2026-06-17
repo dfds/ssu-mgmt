@@ -1,9 +1,14 @@
+mod audit;
+pub mod auth_config;
+
 use axum::Router;
 use crate::api::WebSharedState;
 
-pub fn add_controllers(mut router : Router, state : WebSharedState) -> Router {
-    // router = router.nest("/deployments", monitored_deployments::controller(state.clone()));
-    // router = router.nest("/k8s", k8s::controller(state.clone()));
-
+pub fn add_controllers(mut router : Router, _state : WebSharedState) -> Router {
+    let audit_routes = audit::routes().layer(axum::middleware::from_fn_with_state(
+        "ce.cloudengineer",
+        crate::api::auth::role_check,
+    ));
+    router = router.nest("/audit", audit_routes);
     router
 }
