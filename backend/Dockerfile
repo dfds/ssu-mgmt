@@ -34,7 +34,7 @@ RUN apt-get update \
 RUN --mount=type=cache,target=/usr/local/cargo/registry cargo build --release --bin ssu_mgmt
 
 # App assembling
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG APP=/usr/src/app
 
 RUN apt-get update \
