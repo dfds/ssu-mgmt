@@ -6,7 +6,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM rust:1.79 as rust-cacher
+FROM rust:1.91 as rust-cacher
 
 WORKDIR /build/backend
 RUN apt-get update \
@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry cargo install cargo-chef
 COPY backend/recipe.json .
 RUN --mount=type=cache,target=/usr/local/cargo/registry cargo chef cook --release --recipe-path recipe.json
 
-FROM rust:1.79 as rust-builder
+FROM rust:1.91 as rust-builder
 
 WORKDIR /build/backend
 
