@@ -15,12 +15,13 @@ struct PruneTarget {
 pub async fn run(cancel: CancellationToken, conf: RetentionConfig, pool: DbPool) {
     let interval = std::time::Duration::from_secs(conf.interval_secs.max(60));
     info!(
-        "retention prune worker starting :: interval={}s cloudtrail={}d github={}d selfservice={}d derived={}d batch={}",
+        "retention prune worker starting :: interval={}s cloudtrail={}d github={}d selfservice={}d derived={}d ssumgmt={}d batch={}",
         interval.as_secs(),
         conf.cloudtrail_days,
         conf.github_days,
         conf.selfservice_days,
         conf.derived_days,
+        conf.ssumgmt_days,
         conf.batch_size,
     );
 
@@ -63,6 +64,15 @@ async fn sweep(cancel: &CancellationToken, conf: &RetentionConfig, pool: &DbPool
                     ORDER BY \"timestamp\" LIMIT $2 \
                   ) c WHERE t.ctid = c.ctid",
             days: conf.selfservice_days,
+        },
+        PruneTarget {
+            label: "ssumgmt_audit",
+            sql: "DELETE FROM ssumgmt_audit AS t USING ( \
+                    SELECT ctid FROM ssumgmt_audit \
+                    WHERE ts < now() - make_interval(days => $1::int) \
+                    ORDER BY ts LIMIT $2 \
+                  ) c WHERE t.ctid = c.ctid",
+            days: conf.ssumgmt_days,
         },
         PruneTarget {
             label: "sessions",

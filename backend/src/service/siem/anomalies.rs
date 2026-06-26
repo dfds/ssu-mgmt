@@ -52,7 +52,7 @@ pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usiz
              today AS ( \
                SELECT aa.actor_id AS actor_id, count(*)::float8 AS today_n, max(e.ts) AS last_ts \
                FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
-               WHERE e.ts >= $1 GROUP BY aa.actor_id \
+               WHERE e.ts >= $1 AND e.source <> 'ssu-mgmt' GROUP BY aa.actor_id \
              ), \
              scored AS ( \
                SELECT t.actor_id, t.today_n, t.last_ts, s.mean, s.sd, s.hist_days, \
@@ -90,7 +90,7 @@ pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usiz
              FROM ( \
                SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS n, max(e.ts) AS last_ts \
                FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
-               WHERE e.ts >= $1 \
+               WHERE e.ts >= $1 AND e.source <> 'ssu-mgmt' \
                GROUP BY aa.actor_id, e.source \
              ) r \
              WHERE EXISTS (SELECT 1 FROM actor_aliases a JOIN actor_source_first_seen f ON f.actor = a.alias \
@@ -150,7 +150,7 @@ pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usiz
                  count(*) FILTER (WHERE EXTRACT(hour FROM e.ts) >= $4 OR EXTRACT(hour FROM e.ts) < $5)::float8 AS oh_n, \
                  max(e.ts) FILTER (WHERE EXTRACT(hour FROM e.ts) >= $4 OR EXTRACT(hour FROM e.ts) < $5) AS last_ts \
                FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
-               WHERE e.ts >= $1 GROUP BY aa.actor_id \
+               WHERE e.ts >= $1 AND e.source <> 'ssu-mgmt' GROUP BY aa.actor_id \
              ) \
              SELECT 'off_hours_spike:' || t.actor_id || ':' || to_char($1, 'YYYY-MM-DD'), \
                'off_hours_spike', t.actor_id, 'low', t.oh_n - coalesce(s.mean, 0), coalesce(s.mean, 0), t.oh_n, \

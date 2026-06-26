@@ -158,7 +158,8 @@ pub fn evaluate(conn: &mut PgConnection, siem: &crate::misc::config::SiemConfig)
 }
 
 /// Acknowledge an alert (triage). Returns the number of rows updated (0 if the
-/// alert is missing or already resolved). Writes a self-service audit event.
+/// alert is missing or already resolved). The triage action itself is audited by
+/// the `audit_usage` API middleware (source `ssu-mgmt`), so no write happens here.
 pub fn ack(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usize> {
     let n = diesel::sql_query(
         "UPDATE alerts SET status = 'acked', acked_by = $2, acked_at = now(), updated_at = now() \
@@ -168,13 +169,10 @@ pub fn ack(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usize>
     .bind::<Text, _>(who)
     .execute(conn)
     .context("ack alert")?;
-    if n > 0 {
-        write_triage_audit(conn, "alert.ack", who, id)?;
-    }
     Ok(n)
 }
 
-/// Resolve an alert (triage). Returns the number of rows updated. Writes an audit event.
+/// Resolve an alert (triage). Returns the number of rows updated.
 pub fn resolve(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usize> {
     let n = diesel::sql_query(
         "UPDATE alerts SET status = 'resolved', resolved_by = $2, resolved_at = now(), updated_at = now() \
@@ -184,15 +182,12 @@ pub fn resolve(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<us
     .bind::<Text, _>(who)
     .execute(conn)
     .context("resolve alert")?;
-    if n > 0 {
-        write_triage_audit(conn, "alert.resolve", who, id)?;
-    }
     Ok(n)
 }
 
 /// Un-acknowledge an alert: revert `acked → open`, clearing the ack trail.
-/// No-op (0 rows) unless the alert is currently acked. Writes an audit event.
-pub fn unack(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usize> {
+/// No-op (0 rows) unless the alert is currently acked.
+pub fn unack(conn: &mut PgConnection, id: i64, _who: &str) -> anyhow::Result<usize> {
     let n = diesel::sql_query(
         "UPDATE alerts SET status = 'open', acked_by = NULL, acked_at = NULL, updated_at = now() \
          WHERE id = $1 AND status = 'acked'",
@@ -200,16 +195,13 @@ pub fn unack(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usiz
     .bind::<BigInt, _>(id)
     .execute(conn)
     .context("unack alert")?;
-    if n > 0 {
-        write_triage_audit(conn, "alert.unack", who, id)?;
-    }
     Ok(n)
 }
 
 /// Un-resolve an alert: revert `resolved` to its prior active state (`acked` when
 /// an ack trail survives, else `open`), clearing the resolve trail.
-/// No-op (0 rows) unless the alert is currently resolved. Writes an audit event.
-pub fn unresolve(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<usize> {
+/// No-op (0 rows) unless the alert is currently resolved.
+pub fn unresolve(conn: &mut PgConnection, id: i64, _who: &str) -> anyhow::Result<usize> {
     let n = diesel::sql_query(
         "UPDATE alerts SET status = CASE WHEN acked_at IS NOT NULL THEN 'acked' ELSE 'open' END, \
            resolved_by = NULL, resolved_at = NULL, updated_at = now() \
@@ -218,25 +210,5 @@ pub fn unresolve(conn: &mut PgConnection, id: i64, who: &str) -> anyhow::Result<
     .bind::<BigInt, _>(id)
     .execute(conn)
     .context("unresolve alert")?;
-    if n > 0 {
-        write_triage_audit(conn, "alert.unresolve", who, id)?;
-    }
     Ok(n)
-}
-
-/// Record a triage action as a self-service audit event (the tool audits itself).
-fn write_triage_audit(conn: &mut PgConnection, action: &str, who: &str, alert_id: i64) -> anyhow::Result<()> {
-    diesel::sql_query(
-        "INSERT INTO audit_records_selfservice \
-           (message_id, type, principal, action, method, path, service, timestamp, created_at, request_data) \
-         VALUES ('triage-' || $3 || '-' || $1 || '-' || extract(epoch FROM now())::bigint, \
-                 'triage', $2, $1, 'POST', '/api/alerts/' || $3 || '/' || split_part($1, '.', 2), 'ssu-mgmt', \
-                 now(), now(), jsonb_build_object('alert_id', $3, 'by', $2))",
-    )
-    .bind::<Text, _>(action)
-    .bind::<Text, _>(who)
-    .bind::<BigInt, _>(alert_id)
-    .execute(conn)
-    .context("write triage audit")?;
-    Ok(())
 }

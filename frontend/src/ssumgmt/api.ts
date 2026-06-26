@@ -110,7 +110,7 @@ export interface FieldHelp {
 }
 
 const FIELD_VALUES: Partial<Record<EventField, readonly string[]>> = {
-  source: ['selfservice', 'cloudtrail', 'github'],
+  source: ['selfservice', 'cloudtrail', 'github', 'ssu-mgmt'],
   status: ['success', 'failure'],
 };
 

@@ -184,6 +184,25 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    ssumgmt_audit (id) {
+        id -> Int8,
+        message_id -> Text,
+        ts -> Timestamptz,
+        actor -> Nullable<Text>,
+        action -> Text,
+        method -> Nullable<Text>,
+        path -> Nullable<Text>,
+        status_code -> Nullable<Int4>,
+        status -> Text,
+        level -> Text,
+        source_ip -> Nullable<Text>,
+        role -> Nullable<Text>,
+        request_data -> Nullable<Jsonb>,
+        created_at -> Timestamptz,
+    }
+}
+
 diesel::joinable!(actor_aliases -> actors (actor_id));
 diesel::joinable!(alerts -> actors (actor_id));
 diesel::joinable!(anomalies -> actors (actor_id));
@@ -203,4 +222,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     ingest_watermarks,
     risk_scores,
     sessions,
+    ssumgmt_audit,
 );

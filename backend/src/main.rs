@@ -130,6 +130,11 @@ async fn main() {
 
     service::ingest::init_progress_hub();
 
+    // bg channel created here (before start_server) so the API server can grab the
+    // sender for self-audit; the bg writer + Context wiring below reuse it.
+    let (bg_s, bg_r) = crossbeam::channel::unbounded::<service::bg::Message>();
+    ss.write().unwrap().add_service(bg_s.clone());
+
     let cancel_signal = bs_resp.shutdown_signal.unwrap();
     if conf.enable_api {
         info!("API server enabled");
@@ -151,8 +156,7 @@ async fn main() {
     let wg = crossbeam::sync::WaitGroup::new();
     let aw_wg = wg.clone();
 
-    // bg setup
-    let (bg_s, bg_r) = crossbeam::channel::unbounded::<service::bg::Message>();
+    // bg setup (channel `bg_s`/`bg_r` created earlier so the API can self-audit).
     let offset_tracker = new_offset_tracker();
     ss.write().unwrap().add_service(offset_tracker.clone());
 

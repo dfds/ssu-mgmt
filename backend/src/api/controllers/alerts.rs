@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, Router};
 use serde_json::{json, Value};
 
+use crate::api::auth::principal_of;
 use crate::db::DbPool;
 use crate::service::siem::alerts;
 
@@ -22,23 +23,6 @@ pub fn routes(pool: DbPool) -> Router {
         .route("/:id/unack", axum::routing::post(unack_handler))
         .route("/:id/unresolve", axum::routing::post(unresolve_handler))
         .with_state(pool)
-}
-
-/// Resolve the acting principal from AAD-style claims, preferring human-readable
-/// identifiers over the object id.
-fn principal_of(claims: Option<&Value>) -> String {
-    let c = match claims {
-        Some(c) => c,
-        None => return "unknown".to_string(),
-    };
-    for key in ["preferred_username", "upn", "email", "unique_name", "oid", "sub"] {
-        if let Some(s) = c.get(key).and_then(Value::as_str) {
-            if !s.is_empty() {
-                return s.to_string();
-            }
-        }
-    }
-    "unknown".to_string()
 }
 
 async fn ack_handler(State(pool): State<DbPool>, claims: Option<Extension<Value>>, Path(id): Path<i64>) -> Response {

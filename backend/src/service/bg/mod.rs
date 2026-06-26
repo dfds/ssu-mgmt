@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use diesel::RunQueryDsl;
 use log::{error, info};
 use seqtf_bootstrap::shutdown::Shutdown;
-use crate::db::model::AuditRecordsSelfserviceInsert;
+use crate::db::model::{AuditRecordsSelfserviceInsert, SsuMgmtAuditInsert};
 use crate::messaging::handlers::user_action::UserActionMessage;
 use crate::messaging::model::EnvelopeWithPayload;
 use crate::messaging::offset_tracker::OffsetTracker;
@@ -12,13 +12,17 @@ use crate::db::DbPool;
 
 #[derive(Debug)]
 pub enum Message {
-    UserAction(EnvelopeWithPayload<UserActionMessage>)
+    UserAction(EnvelopeWithPayload<UserActionMessage>),
+    /// The service's own API usage (source `ssu-mgmt`), emitted by the
+    /// `audit_usage` middleware. Batched alongside self-service rows.
+    SelfAudit(SsuMgmtAuditInsert),
 }
 
 pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Message>, offset_tracker: OffsetTracker, pool: DbPool) {
     // msg receiver
     std::thread::spawn(move || {
         let mut insert_buffer : Vec<EnvelopeWithPayload<UserActionMessage>> = Vec::new();
+        let mut self_audit_buffer : Vec<SsuMgmtAuditInsert> = Vec::new();
         let mut last_insert_time = chrono::Utc::now().naive_utc();
         loop {
             // process incoming
@@ -27,6 +31,9 @@ pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Mes
                     match msg {
                         Message::UserAction(msg) => {
                             insert_buffer.push(msg);
+                        }
+                        Message::SelfAudit(row) => {
+                            self_audit_buffer.push(row);
                         }
                     }
                 }
@@ -88,6 +95,32 @@ pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Mes
                         diesel::insert_into(crate::schema::audit_records_selfservice::table)
                             .values(&chunk)
                             .on_conflict_do_nothing() // if row already exists, just ignore it
+                            .execute(&mut db_conn).unwrap();
+                    }
+                });
+                last_insert_time = chrono::Utc::now().naive_utc();
+            }
+
+            // Flush the self-audit buffer on the same cadence. Separate condition so
+            // the service's own API activity is persisted even when no self-service
+            // (Kafka) events are arriving.
+            if time_now.signed_duration_since(last_insert_time).num_seconds() > 5 && self_audit_buffer.len() > 0 {
+                let audit_payload = self_audit_buffer;
+                self_audit_buffer = Vec::new();
+
+                info!("Current self-audit buffer: {}", audit_payload.len());
+
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    let _flush = tracing::info_span!("bg.flush_self_audit", otel.kind = "client", db.system = "postgresql", rows = audit_payload.len()).entered();
+                    let mut db_conn = pool.get().unwrap();
+                    let chunks : Vec<Vec<SsuMgmtAuditInsert>> = audit_payload.chunks(4000)
+                        .map(|c| c.to_vec())
+                        .collect();
+                    for chunk in chunks {
+                        diesel::insert_into(crate::schema::ssumgmt_audit::table)
+                            .values(&chunk)
+                            .on_conflict_do_nothing() // idempotent on the message_id UNIQUE
                             .execute(&mut db_conn).unwrap();
                     }
                 });

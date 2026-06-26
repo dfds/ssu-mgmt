@@ -36,6 +36,28 @@ pub struct AuditRecordsSelfserviceInsert {
     pub request_data : Option<serde_json::Value>,
 }
 
+/// Self-audit row for the service's own API usage (source `ssu-mgmt`). Written by
+/// the `audit_usage` middleware via the bg batch writer; read back through the
+/// 4th branch of the `ssumgmt_events` view. `message_id` is a per-request UUID
+/// (UNIQUE), so `on_conflict_do_nothing` makes batched inserts idempotent.
+#[derive(Insertable, Clone, Debug)]
+#[diesel(table_name = ssumgmt_audit)]
+pub struct SsuMgmtAuditInsert {
+    pub message_id : String,
+    pub ts : chrono::DateTime<chrono::Utc>,
+    pub actor : Option<String>,
+    pub action : String,
+    pub method : Option<String>,
+    pub path : Option<String>,
+    pub status_code : Option<i32>,
+    pub status : String,
+    pub level : String,
+    pub source_ip : Option<String>,
+    pub role : Option<String>,
+    pub request_data : Option<serde_json::Value>,
+    pub created_at : chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Insertable, Clone)]
 #[diesel(table_name = cloudtrail_events)]
 pub struct CloudtrailEventInsert {

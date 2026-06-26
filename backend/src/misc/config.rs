@@ -38,6 +38,7 @@ pub struct Config {
     pub runtime : RuntimeConfig,
     pub timeline : TimelineConfig,
     pub retention : RetentionConfig,
+    pub audit : AuditConfig,
     pub tracing : TracingConfig,
     pub profiling : ProfilingConfig,
     pub db : crate::db::Config
@@ -201,6 +202,9 @@ pub struct RetentionConfig {
     /// Keep derived `sessions`/`anomalies` + **resolved** `alerts` for this many
     /// days (open/acked alerts are never pruned). `<= 0` → keep forever.
     pub derived_days : i64,
+    /// Keep the service's own self-audit rows (`ssumgmt_audit`) for this many days.
+    /// `<= 0` → keep forever.
+    pub ssumgmt_days : i64,
     /// Rows deleted per chunk. Small + index-driven so each chunk is quick and
     /// cancellation is observed promptly between chunks (shutdown-wedge guard).
     pub batch_size : i64,
@@ -214,7 +218,31 @@ impl Default for RetentionConfig {
             github_days : 365,
             selfservice_days : 365,
             derived_days : 90,
+            ssumgmt_days : 365,
             batch_size : 5_000,
+        }
+    }
+}
+
+/// Self-audit knobs (`SSU__AUDIT__*`). The `audit_usage` middleware records every
+/// intentful authenticated API call as a `ssu-mgmt`-source audit event. High-volume
+/// polling endpoints are excluded by matched-path prefix so the audit table (and the
+/// SIEM actor model) aren't flooded with low-intent rows.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AuditConfig {
+    /// Master switch for self-audit. When false, no API-usage rows are written.
+    pub enabled : bool,
+    /// Comma-separated matched-path template **prefixes** to exclude from self-audit
+    /// (matched against the full `/api/...` template). Defaults exclude the dashboard
+    /// polling endpoints plus the auth-config and progress-WS bypasses.
+    pub exclude_prefixes : String,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled : true,
+            exclude_prefixes : "/api/overview/,/api/auth/config,/api/progress/".to_owned(),
         }
     }
 }
@@ -567,7 +595,12 @@ fn set_defaults(builder : ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultS
         .set_default("retention.github_days", 365).unwrap()
         .set_default("retention.selfservice_days", 365).unwrap()
         .set_default("retention.derived_days", 90).unwrap()
+        .set_default("retention.ssumgmt_days", 365).unwrap()
         .set_default("retention.batch_size", 5_000).unwrap()
+
+        // Self-audit: record the service's own API usage as source `ssu-mgmt`.
+        .set_default("audit.enabled", "true").unwrap()
+        .set_default("audit.exclude_prefixes", "/api/overview/,/api/auth/config,/api/progress/").unwrap()
 
         .set_default("tracing.enable", "false").unwrap()
         .set_default("tracing.otlp_endpoint", "http://localhost:4317").unwrap()

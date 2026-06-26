@@ -26,7 +26,7 @@ pub struct RosterMember {
 
 /// Best-effort fetch of the authoritative roster from selfservice-api's REST API.
 /// Returns an empty vec (graceful degradation) on any error or when unconfigured.
-#[tracing::instrument(name = "siem.roster_fetch", skip_all, fields(otel.kind = "client", peer.service = "selfservice-api"))]
+#[tracing::instrument(name = "siem.roster_fetch", skip_all, fields(otel.kind = "client", peer.service = "selfserviceapi"))]
 pub async fn fetch_roster(conf: &SelfserviceConfig) -> Vec<RosterMember> {
     if conf.base_url.is_empty() {
         info!("siem/actors: selfservice base_url unset — roster enrichment skipped");
@@ -378,6 +378,7 @@ pub fn reconcile(conn: &mut PgConnection, roster: &[RosterMember], window_days: 
         "SELECT source, actor, min(ts) AS first_seen, max(ts) AS last_active \
          FROM ssumgmt_events \
          WHERE actor IS NOT NULL AND actor <> '' AND ts >= $1 \
+           AND source <> 'ssu-mgmt' \
          GROUP BY source, actor",
     )
     .bind::<Timestamptz, _>(floor)

@@ -238,7 +238,7 @@ function next(): void {
   void run(false);
 }
 
-const SOURCES = ['selfservice', 'cloudtrail', 'github'];
+const SOURCES = ['selfservice', 'cloudtrail', 'github', 'ssu-mgmt'];
 const STATUSES = ['success', 'failure'];
 
 function rawText(e: SsuMgmtEvent): string {

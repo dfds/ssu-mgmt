@@ -48,7 +48,7 @@ pub fn compute(conn: &mut PgConnection, risk: &RiskConfig, siem: &SiemConfig) ->
             SELECT aa.actor_id AS actor_id, e.ts AS ts, e.status AS status \
             FROM ssumgmt_events e \
             JOIN actor_aliases aa ON aa.alias = e.actor \
-            WHERE e.ts >= $1 \
+            WHERE e.ts >= $1 AND e.source <> 'ssu-mgmt' \
          ), \
          fa AS (SELECT actor_id, count(*) AS n FROM ev WHERE status = 'failure' AND ts >= $2 GROUP BY actor_id), \
          oh AS ( \

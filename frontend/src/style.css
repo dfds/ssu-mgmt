@@ -191,6 +191,8 @@
   --t-blue-soft: rgba(42, 95, 176, 0.12);
   --t-purple: #6b46c0;
   --t-purple-soft: rgba(107, 70, 192, 0.12);
+  --t-teal: #0f7d73;
+  --t-teal-soft: rgba(15, 125, 115, 0.12);
 
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
@@ -226,6 +228,8 @@ html.dark .term {
   --t-blue-soft: rgba(116, 178, 255, 0.16);
   --t-purple: #bd92ff;
   --t-purple-soft: rgba(189, 146, 255, 0.16);
+  --t-teal: #3fd6c6;
+  --t-teal-soft: rgba(63, 214, 198, 0.16);
 }
 
 .term ::-webkit-scrollbar {

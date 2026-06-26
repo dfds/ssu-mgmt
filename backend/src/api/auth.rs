@@ -7,6 +7,25 @@ use serde_json::Value;
 use crate::api::WebSharedState;
 use tower_layer::Layer;
 
+/// Resolve the acting principal from AAD-style claims (inserted by `auth_oauth`),
+/// preferring human-readable identifiers over the object id. Shared by the alert
+/// triage handlers and the `audit_usage` self-audit middleware. Returns `"unknown"`
+/// when no claims are present (e.g. auth disabled).
+pub fn principal_of(claims: Option<&Value>) -> String {
+    let c = match claims {
+        Some(c) => c,
+        None => return "unknown".to_string(),
+    };
+    for key in ["preferred_username", "upn", "email", "unique_name", "oid", "sub"] {
+        if let Some(s) = c.get(key).and_then(Value::as_str) {
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
 pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): OriginalUri, mut request: Request<Body>, next: Next) -> Response {
     // Public bypass: OIDC bootstrap endpoint must be reachable without a token.
     if uri.path() == "/api/auth/config" {

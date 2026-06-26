@@ -27,6 +27,7 @@ const SOURCE_COLORS: Record<string, string> = {
   azure: 'var(--t-purple)',
   '1password': 'var(--t-red)',
   guardduty: 'var(--t-red)',
+  'ssu-mgmt': 'var(--t-teal)',
 };
 
 export function sourceColor(source: string): string {
