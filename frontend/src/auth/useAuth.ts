@@ -95,9 +95,6 @@ export async function initAuth(): Promise<void> {
 
 export async function signIn(): Promise<void> {
   const um = await getUserManager();
-  // Persist the in-app route so we can return after the round-trip to
-  // login.microsoftonline.com. Skip /auth/* paths — those are auth plumbing,
-  // not a place users mean to land.
   const here = window.location.pathname + window.location.search;
   const returnTo = here.startsWith('/auth/') ? '/' : here || '/';
   window.localStorage.setItem('auth.returnTo', returnTo);
@@ -116,8 +113,6 @@ export async function signOut(): Promise<void> {
 export async function getAccessToken(): Promise<string | null> {
   await initAuth();
   if (user.value && !user.value.expired) return user.value.access_token;
-  // Try a silent renew before giving up — handles the case where the
-  // existing token expired between requests.
   try {
     const um = await getUserManager();
     const refreshed = await um.signinSilent();

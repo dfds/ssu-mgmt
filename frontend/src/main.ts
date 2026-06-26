@@ -8,10 +8,6 @@ import './style.css';
 async function bootstrap(): Promise<void> {
   const path = window.location.pathname;
 
-  // Azure redirected back to /auth/callback?code=... — finish the PKCE
-  // exchange, then return to wherever the user was. The static SPA fallback
-  // serves index.html for /auth/callback, so we have to intercept it here
-  // before Vue mounts.
   if (path === '/auth/callback') {
     try {
       const um = await getUserManager();

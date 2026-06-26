@@ -14,10 +14,6 @@ interface TokenResponse {
   expires_in?: number;
 }
 
-// Graph resource scope. The /token request *must* name a resource — AAD
-// rejects refresh_token grants whose only scopes are OIDC (openid/profile/…)
-// with AADSTS90009 ("requesting a token for itself"). Match the Graph
-// UserManager config in client.ts.
 const GRAPH_SCOPE = 'openid profile offline_access https://graph.microsoft.com/User.Read';
 
 async function postRefreshToken(
@@ -53,10 +49,6 @@ async function postRefreshToken(
   return { ok: true, data: (await res.json()) as TokenResponse };
 }
 
-// Drive the API UserManager through one full rotation and return the user it
-// settled on. Short-circuits when storage already holds a non-expired user
-// with an RT — under the cross-flow RT lock this read is consistent with any
-// concurrent renewer, so we can avoid a wasted rotation per avatar load.
 async function rotateApiUser(apiManager: UserManager): Promise<User | null> {
   const existing = await apiManager.getUser();
   if (existing && !existing.expired && existing.refresh_token) {
@@ -74,20 +66,10 @@ async function rotateApiUser(apiManager: UserManager): Promise<User | null> {
 async function seedGraphUserOnce(): Promise<string | null> {
   const apiManager = await getUserManager();
 
-  // Run the entire rotate → POST → write-back under the cross-tab RT lock so
-  // automaticSilentRenew (or any other RT consumer in any tab) cannot fire
-  // concurrently with our Graph /token POST. This also keeps rotateApiUser's
-  // short-circuit read consistent — no other writer can mutate storage
-  // between the getUser() check and the subsequent postRefreshToken.
   return withRtLock(async () => {
     let apiUser = await rotateApiUser(apiManager);
     if (!apiUser?.refresh_token) return null;
 
-    // First attempt with the freshly-rotated RT. Only retry on invalid_grant
-    // (the rotation race — someone redeemed it between rotateApiUser and our
-    // POST). Other 400s like invalid_request/invalid_scope are configuration
-    // errors that won't resolve by retrying, so we bail and let the avatar
-    // fall back to initials.
     let result = await postRefreshToken(apiUser.refresh_token);
     if (!result.ok && result.error === 'invalid_grant') {
       apiUser = await rotateApiUser(apiManager);
@@ -100,9 +82,6 @@ async function seedGraphUserOnce(): Promise<string | null> {
     if (!data.access_token) return null;
 
     if (data.refresh_token) {
-      // storeUser persists the whole User object; re-read the API user just
-      // before writing so we don't clobber any field the manager updated
-      // during our /token POST.
       const fresh = await apiManager.getUser();
       if (fresh) {
         fresh.refresh_token = data.refresh_token;

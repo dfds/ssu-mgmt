@@ -55,7 +55,6 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
         let poll_resp = consumer.poll(rdkafka::util::Timeout::After(std::time::Duration::from_secs(1)));
         match poll_resp {
             None => {
-                // update offsets if a certain amount of time has passed
                 let time_now = chrono::Utc::now().naive_utc();
                 if time_now.signed_duration_since(last_offset_update_time).num_seconds() >= 30 {
                     trace!("Updating offsets");
@@ -70,6 +69,11 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                             tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
                         }
 
+                        let _commit_span = tracing::info_span!(
+                            "kafka.commit_offsets",
+                            partitions = tpl.count()
+                        )
+                        .entered();
                         consumer.commit(&tpl, CommitMode::Sync).unwrap_or_else(|err| {
                             error!("{:?}", err);
                             ()
@@ -101,7 +105,16 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                         let envelope : SsuResult<Envelope> = serde_json::from_str(payload).map_err(|e| e.into());
                         match envelope {
                             Ok(data) => {
-                                // handle msg
+                                let _span = tracing::info_span!(
+                                    "kafka.handle",
+                                    otel.kind = "consumer",
+                                    messaging.system = "kafka",
+                                    messaging.destination.name = "cloudengineering.selfservice.audit",
+                                    event_type = %data._type,
+                                    partition = m.partition(),
+                                    offset = m.offset()
+                                )
+                                .entered();
                                 match registry.get_handler(&data._type) {
                                     None => {
                                         debug!("No handler registered for event type {}, skipping", &data._type);
@@ -124,7 +137,6 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                             }
                         }
 
-                        // update offset tracker
                         context.offset_tracker.offsets.insert(m.partition(), m.offset() + 1);
                     }
                 };
@@ -163,7 +175,6 @@ async fn consumer_loop(consumer : StreamConsumer<CustomConsumerContext>, ct : Ca
                         let envelope : SsuResult<Envelope> = serde_json::from_str(payload).map_err(|e| e.into());
                         match envelope {
                             Ok(data) => {
-                                // handle msg
                                 match registry.get_handler(&data._type) {
                                     None => {
                                         debug!("No handler registered for event type {}, skipping", &data._type);
@@ -186,7 +197,6 @@ async fn consumer_loop(consumer : StreamConsumer<CustomConsumerContext>, ct : Ca
                             }
                         }
 
-                        // update offset tracker
                         context.offset_tracker.offsets.insert(m.partition(), m.offset() + 1);
                     }
                 };

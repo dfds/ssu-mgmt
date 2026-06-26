@@ -13,7 +13,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:6380',
+        // Upgrade WebSocket connections (the live progress stream at
+        // /api/progress/ws) through to the backend, not just HTTP.
+        ws: true,
       },
     },
   },

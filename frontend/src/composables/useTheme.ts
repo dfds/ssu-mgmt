@@ -16,10 +16,6 @@ function applyTheme(dark: boolean): void {
   document.documentElement.classList.toggle('dark', dark);
 }
 
-// Module-level singleton: the theme is applied as soon as this module is first
-// imported (which happens before the sign-in page or loading screen render), and
-// every caller — the sign-in toggle and the in-app TopBar toggle alike — shares
-// one source of truth plus a single system-preference listener.
 const choice = ref<ThemeChoice>(readChoice());
 const isDark = ref<boolean>(choice.value === 'system' ? systemPrefersDark() : choice.value === 'dark');
 

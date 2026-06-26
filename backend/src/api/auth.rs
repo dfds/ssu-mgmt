@@ -13,21 +13,23 @@ pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): 
         return next.run(request).await;
     }
 
-    let mut token = "".to_owned();
-    let auth_header = request.headers().get("authorization");
-    if auth_header.is_some() {
-        token = auth_header.unwrap().to_str().unwrap().replace("Bearer ", "").to_owned();
-    } else {
-        let jar = axum_extra::extract::cookie::CookieJar::from_headers(request.headers());
-        let cookie_token = jar.get("ssu_token");
-        if cookie_token.is_some() {
-            token = cookie_token.unwrap().value().to_string();
-        }
+    // The progress WebSocket can't send an Authorization header (browsers don't
+    // allow custom headers on `new WebSocket()`); it carries its bearer token in
+    // the WS subprotocol instead and authenticates inside its own handler.
+    if uri.path() == "/api/progress/ws" {
+        return next.run(request).await;
     }
 
-    if token.eq("") {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    let token = match request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::trim)
+    {
+        Some(t) if !t.is_empty() => t.to_owned(),
+        _ => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     let auth_svc = state.jwt_validator.layer(Value::default()).auths.first().unwrap().clone();
     let valid = auth_svc.check_auth(&token).await;

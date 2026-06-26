@@ -11,6 +11,8 @@
   "dependencies": {
     "@tanstack/vue-table": "^8.21.3",
     "oidc-client-ts": "^3.5.0",
+    "overlayscrollbars": "^2.16.0",
+    "overlayscrollbars-vue": "^0.5.10",
     "vue": "^3.5.0",
     "vue-router": "^4.6.4"
   },

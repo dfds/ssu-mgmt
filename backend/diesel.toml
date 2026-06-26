@@ -4,6 +4,21 @@
 [print_schema]
 file = "src/schema.rs"
 custom_type_derives = ["diesel::query_builder::QueryId", "Clone"]
+# These tables are accessed only via raw `sql_query` (no Diesel DSL), so they have
+# no `table!` block and must stay out of schema.rs. Baking the exclusion in here
+# means the auto-regen hook (`diesel migration run` rewrites schema.rs) respects it
+# by default — the manual `--except-tables` regex is no longer a footgun. The
+# `cloudtrail_events_default` partition is the auto-generated child of the
+# partitioned `cloudtrail_events` parent. NOTE: print-schema still cannot emit the
+# `ssumgmt_events` VIEW, so its block must still be re-appended by hand after regen
+# (see the schema.rs regen caveat in CLAUDE.md).
+filter = { except_tables = [
+    "cloudtrail_events_default",
+    "leader_leases",
+    "webidentity_session_subjects",
+    "actor_source_first_seen",
+    "actor_daily_counts",
+] }
 
 [migrations_directory]
 dir = "migrations"

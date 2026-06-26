@@ -8,14 +8,14 @@ use crate::db::model::AuditRecordsSelfserviceInsert;
 use crate::messaging::handlers::user_action::UserActionMessage;
 use crate::messaging::model::EnvelopeWithPayload;
 use crate::messaging::offset_tracker::OffsetTracker;
-use crate::misc::config::load_conf;
+use crate::db::DbPool;
 
 #[derive(Debug)]
 pub enum Message {
     UserAction(EnvelopeWithPayload<UserActionMessage>)
 }
 
-pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Message>, offset_tracker: OffsetTracker) {
+pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Message>, offset_tracker: OffsetTracker, pool: DbPool) {
     // msg receiver
     std::thread::spawn(move || {
         let mut insert_buffer : Vec<EnvelopeWithPayload<UserActionMessage>> = Vec::new();
@@ -52,10 +52,11 @@ pub fn start(shutdown: Shutdown, sender: Sender<Message>, receiver: Receiver<Mes
 
                 info!("Current insert buffer: {}", insert_payload.len());
 
+                let pool = pool.clone();
                 std::thread::spawn(move || {
-                    let conf = load_conf().unwrap();
-                    let mut db_conn = crate::db::get_db_conn(&conf.db).unwrap();
-                    let mut payload: Vec<AuditRecordsSelfserviceInsert> = insert_payload.into_iter().map(|envelope| {
+                    let _flush = tracing::info_span!("bg.flush_audit", otel.kind = "client", db.system = "postgresql", rows = insert_payload.len()).entered();
+                    let mut db_conn = pool.get().unwrap();
+                    let payload: Vec<AuditRecordsSelfserviceInsert> = insert_payload.into_iter().map(|envelope| {
                         let request_data = {
                             if envelope.data.request_data != "" {
                                 Some(envelope.data.request_data)

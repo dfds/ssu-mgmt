@@ -68,9 +68,9 @@ onUnmounted(() => {
 
     <RouterLink
       v-if="canAdmin"
-      :to="{ name: 'audit-logs' }"
+      :to="{ name: 'console-status' }"
       class="btn-outline mr-2"
-    >Audit Logs</RouterLink>
+    >Console</RouterLink>
 
     <ThemeToggle />
 

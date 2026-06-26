@@ -20,8 +20,7 @@ async fn serve(req: Request<Body>) -> Response {
         return build_response(path, asset.data.into_owned(), cache_for(path));
     }
 
-    // SPA fallback: client-side route → no extension.
-    if !path.contains('.') {
+    if !path.starts_with("assets/") {
         if let Some(asset) = Asset::get("index.html") {
             return build_response("index.html", asset.data.into_owned(), CacheKind::NoCache);
         }

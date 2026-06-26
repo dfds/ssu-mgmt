@@ -1,6 +1,5 @@
 mod auth;
 mod controllers;
-mod misc;
 mod static_files;
 
 use std::sync::Arc;
@@ -36,12 +35,26 @@ pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
             validation.iss = Some(vec![conf.auth.issuer]);
             let jwt_validator : Authorizer<Value> = JwtAuthorizer::from_oidc(&conf.auth.oidc_url).validation(validation).build().await.unwrap();
             let x = jwt_validator.into_layer();
-            let web_state = Arc::new(WebState::new(x, conf.cache_implementation));
+            let db_pool = ss.read().unwrap().get_service_clone::<crate::db::DbPool>().expect("db pool not registered");
+            let web_state = Arc::new(WebState::new(x, conf.cache_implementation, db_pool));
+
+            let trace_layer = tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                    tracing::info_span!(
+                        "http.request",
+                        otel.kind = "server",
+                        otel.name = tracing::field::Empty,
+                        http.request.method = %req.method(),
+                        method = %req.method(),
+                        path = %req.uri().path(),
+                    )
+                });
 
             let app = axum::Router::new()
                 .nest("/api", api_router(web_state.clone()))
                 .fallback_service(static_files::router())
-                .layer(axum::middleware::from_fn(default_headers));
+                .layer(axum::middleware::from_fn(default_headers))
+                .layer(trace_layer);
 
             let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
 
@@ -60,15 +73,26 @@ pub fn api_router(state : WebSharedState) -> axum::Router {
     let mut routes = axum::Router::new();
 
     routes = routes
-        .route("/global/stats", axum::routing::get(misc::get_stats))
         .route("/auth/config", axum::routing::get(controllers::auth_config::handler))
         .fallback(axum::routing::any(api_fallback));
 
+    routes = routes.nest("/progress", controllers::progress::routes(state.clone()));
+
     routes = add_controllers(routes, state.clone());
+
+    routes = routes.route_layer(axum::middleware::from_fn(record_otel_route));
 
     routes = auth_middleware(routes, state);
 
     routes
+}
+
+async fn record_otel_route(req: Request<Body>, next: Next) -> Response {
+    if let Some(mp) = req.extensions().get::<axum::extract::MatchedPath>() {
+        let name = format!("{} {}", req.method(), mp.as_str());
+        tracing::Span::current().record("otel.name", name.as_str());
+    }
+    next.run(req).await
 }
 
 async fn api_fallback() -> impl IntoResponse {
@@ -95,12 +119,14 @@ pub type WebSharedState = Arc<WebState>;
 #[derive(Clone)]
 pub struct WebState {
     pub jwt_validator : AuthorizationLayer<Value>,
+    pub db_pool : crate::db::DbPool,
 }
 
 impl WebState {
-    pub fn new(layer : AuthorizationLayer<Value>, _cache_implementation : String) -> Self {
+    pub fn new(layer : AuthorizationLayer<Value>, _cache_implementation : String, db_pool : crate::db::DbPool) -> Self {
         Self {
             jwt_validator: layer,
+            db_pool,
         }
     }
 }
