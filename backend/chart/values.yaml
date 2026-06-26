@@ -78,10 +78,10 @@ ingress:
 
 resources:
   requests:
-    memory: "400Mi"
+    memory: "1000Mi"
     cpu: "200m"
   limits:
-    memory: "3600Mi"
+    memory: "4600Mi"
     cpu: "3000m"
 
 
