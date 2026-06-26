@@ -19,10 +19,6 @@ app:
       value: info
     - name: SSU__MESSAGING__GROUP_ID
       value: cloudengineering.ssu-mgmt
-    - name: SSU__LOG_LEVEL
-      value: info
-    - name: SSU__LOG_LEVEL
-      value: info
 
 imagePullSecrets: []
 nameOverride: ""
@@ -82,10 +78,10 @@ ingress:
 
 resources:
   requests:
-    memory: "300Mi"
+    memory: "400Mi"
     cpu: "200m"
   limits:
-    memory: "1200Mi"
+    memory: "1600Mi"
     cpu: "3000m"
 
 
