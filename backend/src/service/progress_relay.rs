@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use log::{info, warn};
 use postgres::fallible_iterator::FallibleIterator;
-use postgres::{Client, NoTls};
+use postgres::Client;
+use postgres_native_tls::MakeTlsConnector;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Config as DbConfig;
@@ -14,9 +15,25 @@ pub fn spawn(conf: DbConfig, cancel: CancellationToken) {
 
 fn relay_loop(conf: DbConfig, cancel: CancellationToken) {
     let conn_str = conf.connection_url();
+    // Match libpq/Diesel's default `sslmode=prefer`: negotiate TLS when the server
+    // offers it, fall back to plaintext otherwise. `accept_invalid_certs(true)` mirrors
+    // `prefer`/`require`, which encrypt but do not verify the server certificate (so a
+    // managed Postgres' non-system-root CA doesn't break the relay the way it doesn't
+    // break libpq). The `postgres` crate's default ssl_mode is `Prefer`, so this connector
+    // still works against the local plaintext dev DB.
+    let connector = match native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+    {
+        Ok(c) => MakeTlsConnector::new(c),
+        Err(e) => {
+            warn!("progress relay: failed to build TLS connector: {e} — relay disabled");
+            return;
+        }
+    };
     let mut backoff = 1u64;
     while !cancel.is_cancelled() {
-        match Client::connect(&conn_str, NoTls) {
+        match Client::connect(&conn_str, connector.clone()) {
             Ok(mut client) => {
                 backoff = 1; // connected — reset the backoff
                 match listen(&mut client, &cancel) {

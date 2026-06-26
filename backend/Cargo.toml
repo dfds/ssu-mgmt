@@ -48,6 +48,11 @@ diesel = { version = "^2.2", features = ["postgres", "chrono", "serde_json", "r2
 r2d2 = "^0.8"
 
 postgres = "^0.19"
+# TLS for the progress-relay `postgres`-crate connection. The rest of the app uses
+# Diesel/libpq (sslmode=prefer → auto-negotiates TLS); the relay must match it or it
+# fails against a TLS-enforcing deployed Postgres while working locally on plaintext.
+postgres-native-tls = "^0.5"
+native-tls = "^0.2"
 
 [build-dependencies]
 vergen = { version = "8.1.3", features = ["build", "git", "gitcl"] }
