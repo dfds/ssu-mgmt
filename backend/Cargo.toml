@@ -54,5 +54,12 @@ postgres = "^0.19"
 postgres-native-tls = "^0.5"
 native-tls = "^0.2"
 
+# jemalloc as the global allocator. glibc malloc creates up to 8×CPU-count arenas that
+# fragment and are essentially never returned to the OS — on a many-core prod node the
+# RSS climbs until the OOM-killer fires. jemalloc returns freed memory to the OS (decay)
+# and is faster under multithreaded allocation. Linux-only; the runtime image is Debian.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "^0.6"
+
 [build-dependencies]
 vergen = { version = "8.1.3", features = ["build", "git", "gitcl"] }

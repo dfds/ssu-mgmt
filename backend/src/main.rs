@@ -5,6 +5,12 @@ mod service;
 pub mod schema;
 mod db;
 
+// Use jemalloc instead of glibc malloc — see the dependency note in Cargo.toml. This is
+// the primary fix for the production OOM (glibc arena fragmentation that never shrinks).
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::sync::Arc;
 use dashmap::DashMap;
 use jwt_authorizer::{Authorizer, JwtAuthorizer, Validation};
@@ -17,7 +23,11 @@ use crate::messaging::offset_tracker::new_offset_tracker;
 use crate::misc::config::load_conf;
 use crate::misc::health::{HealthState, start_health};
 
-#[tokio::main]
+// `main` only orchestrates setup then blocks on the shutdown signal — it does no async
+// work itself (the API/health/worker runtimes each own a dedicated multi-thread runtime on
+// their own thread). A multi-thread runtime here would spawn one worker thread per *host*
+// core for nothing, so use a single-thread runtime.
+#[tokio::main(flavor = "multi_thread", worker_threads = 6)]
 async fn main() {
     let conf = load_conf().unwrap();
     let mut builder = bootstrap("ssu_mgmt".to_owned())
@@ -163,6 +173,11 @@ async fn main() {
         let wg = aw_wg;
         let async_worker_runtime = Arc::new(tokio::runtime::Builder::new_multi_thread()
             .thread_name("async_worker")
+            .worker_threads(crate::misc::runtime::worker_threads(conf.runtime.worker_worker_threads))
+            // Bounds the spawn_blocking pool (default 512). The workers' blocking work is
+            // concurrent gz-decode (≤ cloudtrail `workers`) + Diesel DB ops (≤ pool size),
+            // so the default 32 is ample and keeps thread stacks + arenas from exploding.
+            .max_blocking_threads(conf.runtime.worker_max_blocking_threads)
             .enable_all()
             .build().expect("Unable to create async worker pool"));
         let aw_rt = async_worker_runtime.clone();

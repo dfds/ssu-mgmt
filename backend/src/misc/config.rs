@@ -35,6 +35,7 @@ pub struct Config {
     pub geoip : GeoipConfig,
     pub guardduty : GuarddutyConfig,
     pub worker : WorkerConfig,
+    pub runtime : RuntimeConfig,
     pub timeline : TimelineConfig,
     pub retention : RetentionConfig,
     pub tracing : TracingConfig,
@@ -143,6 +144,40 @@ impl Default for WorkerConfig {
             lease_ttl_secs : 30,
             lease_renew_secs : 10,
             lease_retry_secs : 10,
+        }
+    }
+}
+
+/// Tokio runtime sizing knobs (`SSU__RUNTIME__*`). Each of the three runtimes (API
+/// server, health server, background worker) caps its `worker_threads` and bounds its
+/// `spawn_blocking` pool. The `*_worker_threads` value is a **cap** — the actual count is
+/// `min(cap, host parallelism)` (see `misc::runtime::worker_threads`), so a small node
+/// still uses fewer. The defaults are sized for a ~3-core CPU limit; raise them if the
+/// pod's `limits.cpu` is increased.
+///
+/// Why this exists: `new_multi_thread()` otherwise defaults `worker_threads` to the
+/// *host* core count (CPU affinity, not the cgroup CPU limit) and the blocking pool to
+/// 512, so on a large node the runtimes over-subscribe threads — CFS throttling plus a
+/// pile of 2 MB stacks and per-thread allocator arenas (a contributor to the prod OOM).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RuntimeConfig {
+    pub api_worker_threads : usize,
+    pub api_max_blocking_threads : usize,
+    pub worker_worker_threads : usize,
+    pub worker_max_blocking_threads : usize,
+    pub health_worker_threads : usize,
+    pub health_max_blocking_threads : usize,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            api_worker_threads : 4,
+            api_max_blocking_threads : 16,
+            worker_worker_threads : 4,
+            worker_max_blocking_threads : 32,
+            health_worker_threads : 2,
+            health_max_blocking_threads : 4,
         }
     }
 }
@@ -514,6 +549,14 @@ fn set_defaults(builder : ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultS
         .set_default("worker.lease_ttl_secs", 30).unwrap()
         .set_default("worker.lease_renew_secs", 10).unwrap()
         .set_default("worker.lease_retry_secs", 10).unwrap()
+
+        // Tokio runtime sizing (caps; clamped to host parallelism at build time).
+        .set_default("runtime.api_worker_threads", 4).unwrap()
+        .set_default("runtime.api_max_blocking_threads", 16).unwrap()
+        .set_default("runtime.worker_worker_threads", 4).unwrap()
+        .set_default("runtime.worker_max_blocking_threads", 32).unwrap()
+        .set_default("runtime.health_worker_threads", 2).unwrap()
+        .set_default("runtime.health_max_blocking_threads", 4).unwrap()
 
         .set_default("timeline.rollup_interval_secs", 300).unwrap()
 

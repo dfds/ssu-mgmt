@@ -19,6 +19,12 @@ app:
       value: info
     - name: SSU__MESSAGING__GROUP_ID
       value: cloudengineering.ssu-mgmt
+    # jemalloc tuning (the binary uses jemalloc as its global allocator). Enable the
+    # background purge thread and shorten the decay so freed memory is returned to the OS
+    # promptly — keeps RSS down on the long-running ingest/SIEM workers. tikv-jemallocator
+    # reads the `_RJEM_`-prefixed env var.
+    - name: _RJEM_MALLOC_CONF
+      value: "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
 imagePullSecrets: []
 nameOverride: ""

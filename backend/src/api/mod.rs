@@ -23,8 +23,13 @@ pub fn start_server(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
         info!("Starting API server");
         info!("Listening on: {}", listen_addr);
 
+        let rt_conf = load_conf().unwrap().runtime;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .thread_name("api_server_worker")
+            .worker_threads(crate::misc::runtime::worker_threads(rt_conf.api_worker_threads))
+            // Handlers run DB queries via spawn_blocking; the pool caps real concurrency
+            // (default 10), so a small blocking pool is plenty.
+            .max_blocking_threads(rt_conf.api_max_blocking_threads)
             .enable_all()
             .build().expect("Unable to create API server pool");
 

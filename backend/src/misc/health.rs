@@ -21,10 +21,13 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
         let _s = shutdown.clone();
         info!("Health endpoint listening on: {}", listen_addr);
 
+        let rt_conf = load_conf().unwrap().runtime;
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("api_server_worker")
+            .thread_name("health_worker")
+            .worker_threads(crate::misc::runtime::worker_threads(rt_conf.health_worker_threads))
+            .max_blocking_threads(rt_conf.health_max_blocking_threads)
             .enable_all()
-            .build().expect("Unable to create API server pool");
+            .build().expect("Unable to create health server pool");
 
         runtime.block_on(async move {
             let conf = load_conf().unwrap();
