@@ -81,7 +81,7 @@ resources:
     memory: "400Mi"
     cpu: "200m"
   limits:
-    memory: "1600Mi"
+    memory: "3600Mi"
     cpu: "3000m"
 
 
