@@ -44,16 +44,30 @@ pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usiz
     Ok(touched)
 }
 
+/// Per-transaction guards shared by every maintenance/detector statement: a
+/// `statement_timeout` shutdown-wedge backstop, plus `force_custom_plan` so the
+/// planner estimates the `created_at`/`ts` range from the actual bind value.
+/// Without it the cached prepared statement flips to a generic plan whose
+/// default range estimate makes it scan the 7M-row `coalesce` index via a
+/// pointless BitmapAnd — the harvest's ~4s timeout floor.
+fn set_txn_guards(conn: &mut PgConnection) -> anyhow::Result<()> {
+    diesel::sql_query(format!(
+        "SET LOCAL statement_timeout = '{DETECTOR_STATEMENT_TIMEOUT}'"
+    ))
+    .execute(conn)
+    .context("set statement_timeout")?;
+    diesel::sql_query("SET LOCAL plan_cache_mode = 'force_custom_plan'")
+        .execute(conn)
+        .context("force custom plan")?;
+    Ok(())
+}
+
 fn run_detector<F>(conn: &mut PgConnection, name: &str, f: F) -> usize
 where
     F: FnOnce(&mut PgConnection) -> anyhow::Result<usize>,
 {
     let result = conn.transaction::<usize, anyhow::Error, _>(|conn| {
-        diesel::sql_query(format!(
-            "SET LOCAL statement_timeout = '{DETECTOR_STATEMENT_TIMEOUT}'"
-        ))
-        .execute(conn)
-        .context("set detector statement_timeout")?;
+        set_txn_guards(conn)?;
         f(conn)
     });
     match result {
@@ -221,11 +235,7 @@ fn off_hours_spike(
 
 fn maintain_first_seen(conn: &mut PgConnection) -> anyhow::Result<()> {
     conn.transaction::<(), anyhow::Error, _>(|conn| {
-        diesel::sql_query(format!(
-            "SET LOCAL statement_timeout = '{DETECTOR_STATEMENT_TIMEOUT}'"
-        ))
-        .execute(conn)
-        .context("set first-seen statement_timeout")?;
+        set_txn_guards(conn)?;
 
         #[derive(QueryableByName)]
         struct Snap {
@@ -298,11 +308,7 @@ fn maintain_first_seen(conn: &mut PgConnection) -> anyhow::Result<()> {
 
 fn maintain_daily_counts(conn: &mut PgConnection) -> anyhow::Result<()> {
     conn.transaction::<(), anyhow::Error, _>(|conn| {
-        diesel::sql_query(format!(
-            "SET LOCAL statement_timeout = '{DETECTOR_STATEMENT_TIMEOUT}'"
-        ))
-        .execute(conn)
-        .context("set daily-counts statement_timeout")?;
+        set_txn_guards(conn)?;
 
         let w = get_watermark(conn, DAILY_COUNTS_WATERMARK_SOURCE)
             .context("read daily-counts watermark")?
