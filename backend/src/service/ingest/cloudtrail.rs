@@ -446,8 +446,8 @@ async fn run_once(
                     break 'sweep;
                 }
 
-                let (events, cursor, max_event_at, scanned) =
-                    fetch_prefix(client, &conf.bucket, chunk, conf, allowlist, floor).await;
+                let (applied, cursor, max_event_at, scanned) =
+                    fetch_prefix(client, &conf.bucket, chunk, conf, allowlist, floor, pool).await;
 
                 objects_total += scanned as i64;
                 account_objects += scanned as i64;
@@ -455,14 +455,10 @@ async fn run_once(
                     sweep_max_event_at = Some(sweep_max_event_at.map_or(m, |x| x.max(m)));
                 }
 
-                // Nothing fetched — the chunk's first key failed. Can't advance the
-                // cursor past it, so stop the prefix; next sweep retries from the
-                // unchanged cursor.
                 if cursor.is_none() {
                     break;
                 }
 
-                let applied = commit_prefix(pool, &day_prefix, events, cursor.clone()).await?;
                 events_total += applied;
                 account_applied += applied;
                 if let Some(c) = cursor {
@@ -641,55 +637,60 @@ async fn fetch_prefix(
     conf: &CloudtrailConfig,
     allowlist: &[String],
     floor: DateTime<Utc>,
-) -> (
-    Vec<CloudtrailEventInsert>,
-    Option<String>,
-    Option<DateTime<Utc>>,
-    usize,
-) {
+    pool: &DbPool,
+) -> (i64, Option<String>, Option<DateTime<Utc>>, usize) {
     let decode_budget: Option<Arc<Semaphore>> = (conf.max_decode_mb > 0).then(|| {
         Arc::new(Semaphore::new(
             conf.max_decode_mb.min(Semaphore::MAX_PERMITS),
         ))
     });
 
-    let results: Vec<(String, anyhow::Result<Vec<CloudtrailEventInsert>>)> =
-        stream::iter(keys.to_vec())
-            .map(|key| {
-                let client = client.clone();
-                let bucket = bucket.to_string();
-                let allow = allowlist.to_vec();
-                let mgmt_only = conf.management_events_only;
-                let budget = decode_budget.clone();
-                let budget_mb = conf.max_decode_mb;
-                async move {
-                    let r = fetch_object(
-                        &client, &bucket, &key, allow, mgmt_only, floor, budget, budget_mb,
-                    )
-                    .await;
-                    (key, r)
-                }
-            })
-            .buffer_unordered(conf.workers.max(1))
-            .collect()
-            .await;
+    type ObjResult = anyhow::Result<(i64, Option<DateTime<Utc>>)>;
+    let results: Vec<(String, ObjResult)> = stream::iter(keys.to_vec())
+        .map(|key| {
+            let client = client.clone();
+            let bucket = bucket.to_string();
+            let allow = allowlist.to_vec();
+            let mgmt_only = conf.management_events_only;
+            let budget = decode_budget.clone();
+            let budget_mb = conf.max_decode_mb;
+            let flush_records = conf.flush_records;
+            let pool = pool.clone();
+            async move {
+                let r = fetch_object(
+                    &client,
+                    &bucket,
+                    &key,
+                    allow,
+                    mgmt_only,
+                    floor,
+                    budget,
+                    budget_mb,
+                    &pool,
+                    flush_records,
+                )
+                .await;
+                (key, r)
+            }
+        })
+        .buffer_unordered(conf.workers.max(1))
+        .collect()
+        .await;
 
-    // Reassemble in lexical (== time) order; stop the cursor at the first failure.
-    let mut by_key: HashMap<String, anyhow::Result<Vec<CloudtrailEventInsert>>> =
-        results.into_iter().collect();
-    let mut events = Vec::new();
+    let mut by_key: HashMap<String, ObjResult> = results.into_iter().collect();
+    let mut applied = 0i64;
     let mut cursor: Option<String> = None;
     let mut max_event_at: Option<DateTime<Utc>> = None;
     let mut scanned = 0usize;
 
     for key in keys {
         match by_key.remove(key) {
-            Some(Ok(mut evs)) => {
+            Some(Ok((n, max))) => {
                 scanned += 1;
-                for e in &evs {
-                    max_event_at = Some(max_event_at.map_or(e.event_time, |x| x.max(e.event_time)));
+                applied += n;
+                if let Some(m) = max {
+                    max_event_at = Some(max_event_at.map_or(m, |x| x.max(m)));
                 }
-                events.append(&mut evs);
                 cursor = Some(key.clone());
             }
             Some(Err(e)) => {
@@ -702,7 +703,7 @@ async fn fetch_prefix(
             None => break,
         }
     }
-    (events, cursor, max_event_at, scanned)
+    (applied, cursor, max_event_at, scanned)
 }
 
 /// Approximate peak-memory multiplier over a CloudTrail object's *compressed* size,
@@ -728,7 +729,9 @@ async fn fetch_object(
     floor: DateTime<Utc>,
     decode_budget: Option<Arc<Semaphore>>,
     budget_mb: usize,
-) -> anyhow::Result<Vec<CloudtrailEventInsert>> {
+    pool: &DbPool,
+    flush_records: usize,
+) -> anyhow::Result<(i64, Option<DateTime<Utc>>)> {
     let obj = client
         .get_object()
         .bucket(bucket)
@@ -761,11 +764,58 @@ async fn fetch_object(
         .to_vec();
 
     let key_owned = key.to_string();
+    let pool = pool.clone();
     tokio::task::spawn_blocking(move || {
-        decode_and_map(bytes, &key_owned, &allowlist, management_only, floor)
+        decode_and_map(
+            bytes,
+            &key_owned,
+            &allowlist,
+            management_only,
+            floor,
+            &pool,
+            flush_records,
+        )
     })
     .await
     .with_context(|| format!("decode task join {}", key))?
+}
+
+struct DecodeAccum {
+    applied: i64,
+    max_event_at: Option<DateTime<Utc>>,
+    db_err: Option<anyhow::Error>,
+}
+
+fn flush_batch(
+    pool: &DbPool,
+    buf: &mut Vec<CloudtrailEventInsert>,
+    acc: &mut DecodeAccum,
+) -> anyhow::Result<()> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+    for row in buf.iter() {
+        acc.max_event_at = Some(
+            acc.max_event_at
+                .map_or(row.event_time, |x| x.max(row.event_time)),
+        );
+    }
+    let mut conn = pool.get().context("pool get")?;
+    conn.transaction::<_, anyhow::Error, _>(|conn| {
+        // CloudtrailEventInsert has 19 columns; Postgres caps a statement at 65535
+        // bind parameters, so a chunk must stay under 65535/19 ≈ 3449 rows. 3000
+        // keeps headroom.
+        for chunk in buf.chunks(3000) {
+            acc.applied += diesel::insert_into(crate::schema::cloudtrail_events::table)
+                .values(chunk)
+                .on_conflict_do_nothing()
+                .execute(conn)
+                .context("insert cloudtrail_events")? as i64;
+        }
+        Ok(())
+    })?;
+    buf.clear();
+    Ok(())
 }
 
 fn decode_and_map(
@@ -774,35 +824,51 @@ fn decode_and_map(
     allowlist: &[String],
     management_only: bool,
     floor: DateTime<Utc>,
-) -> anyhow::Result<Vec<CloudtrailEventInsert>> {
+    pool: &DbPool,
+    flush_records: usize,
+) -> anyhow::Result<(i64, Option<DateTime<Utc>>)> {
     let reader = std::io::BufReader::new(GzDecoder::new(&bytes[..]));
     let mut de = serde_json::Deserializer::from_reader(reader);
+    let mut acc = DecodeAccum {
+        applied: 0,
+        max_event_at: None,
+        db_err: None,
+    };
     let mapper = RecordsMapper {
         allowlist,
         management_only,
         floor,
         now: Utc::now(),
         key,
+        pool,
+        flush_records: flush_records.max(1),
+        acc: &mut acc,
     };
     match serde::de::DeserializeSeed::deserialize(mapper, &mut de) {
-        Ok(out) => Ok(out),
+        Ok(()) => Ok((acc.applied, acc.max_event_at)),
         Err(e) => {
+            if let Some(db) = acc.db_err.take() {
+                return Err(db.context(format!("commit cloudtrail object {}", key)));
+            }
             warn!("skipping undecodable cloudtrail object {}: {}", key, e);
-            Ok(Vec::new())
+            Ok((acc.applied, acc.max_event_at))
         }
     }
 }
 
-struct RecordsMapper<'a> {
+struct RecordsMapper<'a, 'b> {
     allowlist: &'a [String],
     management_only: bool,
     floor: DateTime<Utc>,
     now: DateTime<Utc>,
     key: &'a str,
+    pool: &'a DbPool,
+    flush_records: usize,
+    acc: &'b mut DecodeAccum,
 }
 
-impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsMapper<'a> {
-    type Value = Vec<CloudtrailEventInsert>;
+impl<'a, 'b, 'de> serde::de::DeserializeSeed<'de> for RecordsMapper<'a, 'b> {
+    type Value = ();
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -811,8 +877,8 @@ impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsMapper<'a> {
     }
 }
 
-impl<'a, 'de> serde::de::Visitor<'de> for RecordsMapper<'a> {
-    type Value = Vec<CloudtrailEventInsert>;
+impl<'a, 'b, 'de> serde::de::Visitor<'de> for RecordsMapper<'a, 'b> {
+    type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("a CloudTrail log object")
     }
@@ -820,34 +886,39 @@ impl<'a, 'de> serde::de::Visitor<'de> for RecordsMapper<'a> {
     where
         M: serde::de::MapAccess<'de>,
     {
-        let mut out = Vec::new();
         while let Some(k) = map.next_key::<String>()? {
             if k == "Records" {
-                out = map.next_value_seed(RecordsSeq {
+                map.next_value_seed(RecordsSeq {
                     allowlist: self.allowlist,
                     management_only: self.management_only,
                     floor: self.floor,
                     now: self.now,
                     key: self.key,
+                    pool: self.pool,
+                    flush_records: self.flush_records,
+                    acc: &mut *self.acc,
                 })?;
             } else {
                 map.next_value::<serde::de::IgnoredAny>()?;
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 
-struct RecordsSeq<'a> {
+struct RecordsSeq<'a, 'b> {
     allowlist: &'a [String],
     management_only: bool,
     floor: DateTime<Utc>,
     now: DateTime<Utc>,
     key: &'a str,
+    pool: &'a DbPool,
+    flush_records: usize,
+    acc: &'b mut DecodeAccum,
 }
 
-impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsSeq<'a> {
-    type Value = Vec<CloudtrailEventInsert>;
+impl<'a, 'b, 'de> serde::de::DeserializeSeed<'de> for RecordsSeq<'a, 'b> {
+    type Value = ();
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -856,8 +927,8 @@ impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsSeq<'a> {
     }
 }
 
-impl<'a, 'de> serde::de::Visitor<'de> for RecordsSeq<'a> {
-    type Value = Vec<CloudtrailEventInsert>;
+impl<'a, 'b, 'de> serde::de::Visitor<'de> for RecordsSeq<'a, 'b> {
+    type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("an array of CloudTrail records")
     }
@@ -865,7 +936,7 @@ impl<'a, 'de> serde::de::Visitor<'de> for RecordsSeq<'a> {
     where
         S: serde::de::SeqAccess<'de>,
     {
-        let mut out = Vec::new();
+        let mut buf: Vec<CloudtrailEventInsert> = Vec::new();
         while let Some(rec) = seq.next_element::<Value>()? {
             if let Some(row) = map_record(
                 rec,
@@ -875,10 +946,20 @@ impl<'a, 'de> serde::de::Visitor<'de> for RecordsSeq<'a> {
                 self.now,
                 self.key,
             ) {
-                out.push(row);
+                buf.push(row);
+                if buf.len() >= self.flush_records {
+                    if let Err(e) = flush_batch(self.pool, &mut buf, &mut *self.acc) {
+                        self.acc.db_err = Some(e);
+                        return Err(serde::de::Error::custom("cloudtrail sub-batch flush failed"));
+                    }
+                }
             }
         }
-        Ok(out)
+        if let Err(e) = flush_batch(self.pool, &mut buf, &mut *self.acc) {
+            self.acc.db_err = Some(e);
+            return Err(serde::de::Error::custom("cloudtrail sub-batch flush failed"));
+        }
+        Ok(())
     }
 }
 
@@ -1562,46 +1643,6 @@ async fn load_cursors(pool: &DbPool) -> anyhow::Result<HashMap<String, String>> 
             .and_then(|c| serde_json::from_str::<HashMap<String, String>>(&c).ok())
             .unwrap_or_default();
         Ok(cursors)
-    })
-    .await
-    .context("join")?
-}
-
-/// Insert one day-prefix's events (chunked, dedup) and return the applied count.
-/// The cursor advance happens in `finalize_sweep` so a single watermark write
-/// carries the whole sweep's cursor map; the inserts here are independently
-/// idempotent, so a crash before finalize simply re-lists from the old cursor.
-// No per-prefix span (see `fetch_prefix`): one per committed day-prefix per
-// account is sweep-trace noise. The aggregate lives on `cloudtrail.sweep`.
-async fn commit_prefix(
-    pool: &DbPool,
-    _prefix: &str,
-    events: Vec<CloudtrailEventInsert>,
-    _cursor: Option<String>,
-) -> anyhow::Result<i64> {
-    if events.is_empty() {
-        return Ok(0);
-    }
-    let pool = pool.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
-        let mut conn = pool.get().context("pool get")?;
-        let mut applied = 0i64;
-        conn.transaction::<_, anyhow::Error, _>(|conn| {
-            // CloudtrailEventInsert has 19 columns; Postgres caps a statement at
-            // 65535 bind parameters, so a chunk must stay under 65535/19 ≈ 3449
-            // rows. 3000 keeps headroom (the old 4000 overflowed once a prefix
-            // produced ≥3450 events in one commit — surfaced when the
-            // assumed_role_arn/identity_source columns were added).
-            for chunk in events.chunks(3000) {
-                applied += diesel::insert_into(crate::schema::cloudtrail_events::table)
-                    .values(chunk)
-                    .on_conflict_do_nothing()
-                    .execute(conn)
-                    .context("insert cloudtrail_events")? as i64;
-            }
-            Ok(())
-        })?;
-        Ok(applied)
     })
     .await
     .context("join")?

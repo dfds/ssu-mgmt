@@ -399,6 +399,17 @@ pub struct CloudtrailConfig {
     pub max_decode_mb: usize,
     /// Objects folded into one commit transaction.
     pub batch_size: usize,
+    /// Records buffered in memory before flushing a sub-batch to Postgres
+    /// **within a single object's decode**. This — not `batch_size` (objects) — is
+    /// what bounds decode memory: a single CloudTrail object can hold ~1M records,
+    /// and accumulating all of their `serde_json::Value` `raw` trees before
+    /// committing was a heap-dump-confirmed multi-GB OOM. `decode_and_map` now
+    /// streams the `Records` array and flushes every `flush_records` kept rows
+    /// (idempotent `on_conflict_do_nothing`), so peak ≈ `flush_records` rows ×
+    /// concurrent decodes. Larger → fewer commits/WAL fsyncs but more memory;
+    /// smaller → the opposite. Tune against `/debug/mem`. `0` → fall back to a safe
+    /// internal default.
+    pub flush_records: usize,
     /// Backfill throttle: max objects downloaded per sweep (0 → unbounded).
     pub max_objects_per_run: i64,
     /// Per-account fairness cap: max objects a single account may consume in one
@@ -567,6 +578,8 @@ fn set_defaults(builder: ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultSt
         .set_default("cloudtrail.max_decode_mb", 1500)
         .unwrap()
         .set_default("cloudtrail.batch_size", 100)
+        .unwrap()
+        .set_default("cloudtrail.flush_records", 10_000)
         .unwrap()
         .set_default("cloudtrail.max_objects_per_run", 0)
         .unwrap()
