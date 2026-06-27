@@ -43,16 +43,10 @@ spec:
           {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.app.environment }}
           env:
-            - name: _RJEM_MALLOC_CONF
-              value: "{{ .Values.jemalloc.conf }}{{ if .Values.profiling.heapCapture }},prof:true,prof_active:true,lg_prof_sample:19,lg_prof_interval:30,prof_prefix:/dump/jeprof{{ end }}"
-            {{- if .Values.profiling.heapCapture }}
-            - name: SSU__PROFILING__ENABLE
-              value: "true"
-            {{- end }}
-            {{- with .Values.app.environment }}
             {{- toYaml . | nindent 12}}
-            {{- end }}
+          {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.app.config.confSecretRef }}
