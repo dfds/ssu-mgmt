@@ -395,6 +395,8 @@ pub struct CloudtrailConfig {
     pub poll_interval_secs: u64,
     /// Concurrent object download+decode workers per sweep.
     pub workers: usize,
+    /// Peak decode working-set budget in MB, across all concurrent decodes
+    pub max_decode_mb: usize,
     /// Objects folded into one commit transaction.
     pub batch_size: usize,
     /// Backfill throttle: max objects downloaded per sweep (0 → unbounded).
@@ -561,6 +563,8 @@ fn set_defaults(builder: ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultSt
         .set_default("cloudtrail.poll_interval_secs", 300)
         .unwrap()
         .set_default("cloudtrail.workers", 12)
+        .unwrap()
+        .set_default("cloudtrail.max_decode_mb", 1500)
         .unwrap()
         .set_default("cloudtrail.batch_size", 100)
         .unwrap()

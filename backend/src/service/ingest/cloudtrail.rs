@@ -15,6 +15,8 @@ use futures::stream::{self, StreamExt};
 use log::{error, info, warn};
 use serde_json::Value;
 use std::io::Read;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::model::CloudtrailEventInsert;
@@ -646,6 +648,12 @@ async fn fetch_prefix(
     Option<DateTime<Utc>>,
     usize,
 ) {
+    let decode_budget: Option<Arc<Semaphore>> = (conf.max_decode_mb > 0).then(|| {
+        Arc::new(Semaphore::new(
+            conf.max_decode_mb.min(Semaphore::MAX_PERMITS),
+        ))
+    });
+
     let results: Vec<(String, anyhow::Result<Vec<CloudtrailEventInsert>>)> =
         stream::iter(keys.to_vec())
             .map(|key| {
@@ -653,8 +661,13 @@ async fn fetch_prefix(
                 let bucket = bucket.to_string();
                 let allow = allowlist.to_vec();
                 let mgmt_only = conf.management_events_only;
+                let budget = decode_budget.clone();
+                let budget_mb = conf.max_decode_mb;
                 async move {
-                    let r = fetch_object(&client, &bucket, &key, allow, mgmt_only, floor).await;
+                    let r = fetch_object(
+                        &client, &bucket, &key, allow, mgmt_only, floor, budget, budget_mb,
+                    )
+                    .await;
                     (key, r)
                 }
             })
@@ -693,6 +706,14 @@ async fn fetch_prefix(
     (events, cursor, max_event_at, scanned)
 }
 
+/// Approximate peak-memory multiplier over a CloudTrail object's *compressed* size,
+/// used to size the decode-budget reservation. The peak working set is the compressed
+/// body (held through decode) + the decompressed JSON text (~10–20× the gzip) + the
+/// `serde_json::Value` tree (another few ×), all live at once in `decode_and_map`. This
+/// is deliberately a rough over-estimate — the precise lever is `max_decode_mb`, tuned
+/// against `/debug/mem`; this only apportions the budget fairly across objects by size.
+const DECODE_EXPANSION: u64 = 30;
+
 /// Download one gzipped CloudTrail object (`{"Records":[...]}`) and map the
 /// allowlisted management events to insert rows. The S3 GET is async; the
 /// gz-decode + JSON-parse + record mapping (the CPU-bound half) is handed to
@@ -706,6 +727,8 @@ async fn fetch_object(
     allowlist: Vec<String>,
     management_only: bool,
     floor: DateTime<Utc>,
+    decode_budget: Option<Arc<Semaphore>>,
+    budget_mb: usize,
 ) -> anyhow::Result<Vec<CloudtrailEventInsert>> {
     let obj = client
         .get_object()
@@ -714,6 +737,22 @@ async fn fetch_object(
         .send()
         .await
         .with_context(|| format!("get object {}", key))?;
+
+    let _permit = match &decode_budget {
+        Some(sem) => {
+            let compressed = obj.content_length().unwrap_or(0).max(0) as u64;
+            let est_mb = (compressed.saturating_mul(DECODE_EXPANSION) / (1024 * 1024)).max(1);
+            let want = est_mb.min(budget_mb as u64) as u32;
+            Some(
+                sem.clone()
+                    .acquire_many_owned(want)
+                    .await
+                    .expect("decode budget semaphore is never closed"),
+            )
+        }
+        None => None,
+    };
+
     let bytes = obj
         .body
         .collect()
@@ -747,9 +786,11 @@ fn decode_and_map(
         return Ok(Vec::new());
     }
 
-    let doc: Value = serde_json::from_str(&text).with_context(|| format!("parse json {}", key))?;
-    let records = match doc.get("Records").and_then(|r| r.as_array()) {
-        Some(r) => r,
+    let mut doc: Value =
+        serde_json::from_str(&text).with_context(|| format!("parse json {}", key))?;
+
+    let records = match doc.get_mut("Records").and_then(Value::as_array_mut) {
+        Some(r) => std::mem::take(r),
         None => return Ok(Vec::new()),
     };
 
@@ -785,7 +826,7 @@ fn decode_and_map(
             _ => continue,
         };
 
-        let identity = derive_identity(rec);
+        let identity = derive_identity(&rec);
         out.push(CloudtrailEventInsert {
             event_id,
             event_time,
@@ -795,8 +836,8 @@ fn decode_and_map(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
-            aws_region: str_field(rec, "awsRegion"),
-            recipient_account_id: str_field(rec, "recipientAccountId"),
+            aws_region: str_field(&rec, "awsRegion"),
+            recipient_account_id: str_field(&rec, "recipientAccountId"),
             user_identity_account_id: rec
                 .get("userIdentity")
                 .and_then(|u| u.get("accountId"))
@@ -808,13 +849,13 @@ fn decode_and_map(
             principal_name: identity.principal_name,
             assumed_role_arn: identity.assumed_role_arn,
             identity_source: identity.identity_source,
-            source_ip: str_field(rec, "sourceIPAddress"),
-            user_agent: str_field(rec, "userAgent"),
-            error_code: str_field(rec, "errorCode"),
+            source_ip: str_field(&rec, "sourceIPAddress"),
+            user_agent: str_field(&rec, "userAgent"),
+            error_code: str_field(&rec, "errorCode"),
             read_only: rec.get("readOnly").and_then(Value::as_bool),
             management_event: Some(is_management),
             s3_object_key: Some(key.to_string()),
-            raw: rec.clone(),
+            raw: rec,
             created_at: now,
         });
     }
