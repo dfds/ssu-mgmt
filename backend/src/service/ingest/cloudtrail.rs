@@ -14,7 +14,6 @@ use flate2::read::GzDecoder;
 use futures::stream::{self, StreamExt};
 use log::{error, info, warn};
 use serde_json::Value;
-use std::io::Read;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -769,9 +768,6 @@ async fn fetch_object(
     .with_context(|| format!("decode task join {}", key))?
 }
 
-/// CPU-bound half of `fetch_object`: gunzip → JSON-parse → allowlist/management
-/// filter → map to insert rows. Synchronous by design — invoked under
-/// `spawn_blocking` so the decode/parse never runs on an async runtime thread.
 fn decode_and_map(
     bytes: Vec<u8>,
     key: &str,
@@ -779,87 +775,179 @@ fn decode_and_map(
     management_only: bool,
     floor: DateTime<Utc>,
 ) -> anyhow::Result<Vec<CloudtrailEventInsert>> {
-    let mut decoder = GzDecoder::new(&bytes[..]);
-    let mut text = String::new();
-    if let Err(e) = decoder.read_to_string(&mut text) {
-        warn!("skipping undecodable cloudtrail object {}: {}", key, e);
-        return Ok(Vec::new());
-    }
-
-    let mut doc: Value =
-        serde_json::from_str(&text).with_context(|| format!("parse json {}", key))?;
-
-    let records = match doc.get_mut("Records").and_then(Value::as_array_mut) {
-        Some(r) => std::mem::take(r),
-        None => return Ok(Vec::new()),
+    let reader = std::io::BufReader::new(GzDecoder::new(&bytes[..]));
+    let mut de = serde_json::Deserializer::from_reader(reader);
+    let mapper = RecordsMapper {
+        allowlist,
+        management_only,
+        floor,
+        now: Utc::now(),
+        key,
     };
-
-    let now = Utc::now();
-    let mut out = Vec::new();
-    for rec in records {
-        let event_name = rec.get("eventName").and_then(Value::as_str).unwrap_or("");
-        if !allowlist.iter().any(|a| a == event_name) {
-            continue;
+    match serde::de::DeserializeSeed::deserialize(mapper, &mut de) {
+        Ok(out) => Ok(out),
+        Err(e) => {
+            warn!("skipping undecodable cloudtrail object {}: {}", key, e);
+            Ok(Vec::new())
         }
-        let category = rec.get("eventCategory").and_then(Value::as_str);
-        let is_management = category.map(|c| c == "Management").unwrap_or_else(|| {
-            rec.get("managementEvent")
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
-        });
-        if management_only && !is_management {
-            continue;
-        }
-        let event_time = match rec
-            .get("eventTime")
-            .and_then(Value::as_str)
-            .and_then(parse_event_time)
-        {
-            Some(t) => t,
-            None => continue,
-        };
-        if event_time < floor {
-            continue;
-        }
-        let event_id = match rec.get("eventID").and_then(Value::as_str) {
-            Some(id) if !id.is_empty() => id.to_string(),
-            _ => continue,
-        };
-
-        let identity = derive_identity(&rec);
-        out.push(CloudtrailEventInsert {
-            event_id,
-            event_time,
-            event_name: event_name.to_string(),
-            event_source: rec
-                .get("eventSource")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            aws_region: str_field(&rec, "awsRegion"),
-            recipient_account_id: str_field(&rec, "recipientAccountId"),
-            user_identity_account_id: rec
-                .get("userIdentity")
-                .and_then(|u| u.get("accountId"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-            principal_arn: identity.principal_arn,
-            principal_type: identity.principal_type,
-            principal_name: identity.principal_name,
-            assumed_role_arn: identity.assumed_role_arn,
-            identity_source: identity.identity_source,
-            source_ip: str_field(&rec, "sourceIPAddress"),
-            user_agent: str_field(&rec, "userAgent"),
-            error_code: str_field(&rec, "errorCode"),
-            read_only: rec.get("readOnly").and_then(Value::as_bool),
-            management_event: Some(is_management),
-            s3_object_key: Some(key.to_string()),
-            raw: rec,
-            created_at: now,
-        });
     }
-    Ok(out)
+}
+
+struct RecordsMapper<'a> {
+    allowlist: &'a [String],
+    management_only: bool,
+    floor: DateTime<Utc>,
+    now: DateTime<Utc>,
+    key: &'a str,
+}
+
+impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsMapper<'a> {
+    type Value = Vec<CloudtrailEventInsert>;
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'a, 'de> serde::de::Visitor<'de> for RecordsMapper<'a> {
+    type Value = Vec<CloudtrailEventInsert>;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a CloudTrail log object")
+    }
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: serde::de::MapAccess<'de>,
+    {
+        let mut out = Vec::new();
+        while let Some(k) = map.next_key::<String>()? {
+            if k == "Records" {
+                out = map.next_value_seed(RecordsSeq {
+                    allowlist: self.allowlist,
+                    management_only: self.management_only,
+                    floor: self.floor,
+                    now: self.now,
+                    key: self.key,
+                })?;
+            } else {
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+struct RecordsSeq<'a> {
+    allowlist: &'a [String],
+    management_only: bool,
+    floor: DateTime<Utc>,
+    now: DateTime<Utc>,
+    key: &'a str,
+}
+
+impl<'a, 'de> serde::de::DeserializeSeed<'de> for RecordsSeq<'a> {
+    type Value = Vec<CloudtrailEventInsert>;
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'a, 'de> serde::de::Visitor<'de> for RecordsSeq<'a> {
+    type Value = Vec<CloudtrailEventInsert>;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an array of CloudTrail records")
+    }
+    fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+    where
+        S: serde::de::SeqAccess<'de>,
+    {
+        let mut out = Vec::new();
+        while let Some(rec) = seq.next_element::<Value>()? {
+            if let Some(row) = map_record(
+                rec,
+                self.allowlist,
+                self.management_only,
+                self.floor,
+                self.now,
+                self.key,
+            ) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn map_record(
+    rec: Value,
+    allowlist: &[String],
+    management_only: bool,
+    floor: DateTime<Utc>,
+    now: DateTime<Utc>,
+    key: &str,
+) -> Option<CloudtrailEventInsert> {
+    let event_name = rec.get("eventName").and_then(Value::as_str).unwrap_or("");
+    if !allowlist.iter().any(|a| a == event_name) {
+        return None;
+    }
+    let category = rec.get("eventCategory").and_then(Value::as_str);
+    let is_management = category.map(|c| c == "Management").unwrap_or_else(|| {
+        rec.get("managementEvent")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    });
+    if management_only && !is_management {
+        return None;
+    }
+    let event_time = rec
+        .get("eventTime")
+        .and_then(Value::as_str)
+        .and_then(parse_event_time)?;
+    if event_time < floor {
+        return None;
+    }
+    let event_id = match rec.get("eventID").and_then(Value::as_str) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => return None,
+    };
+    let event_name = event_name.to_string();
+
+    let identity = derive_identity(&rec);
+    Some(CloudtrailEventInsert {
+        event_id,
+        event_time,
+        event_name,
+        event_source: rec
+            .get("eventSource")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        aws_region: str_field(&rec, "awsRegion"),
+        recipient_account_id: str_field(&rec, "recipientAccountId"),
+        user_identity_account_id: rec
+            .get("userIdentity")
+            .and_then(|u| u.get("accountId"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        principal_arn: identity.principal_arn,
+        principal_type: identity.principal_type,
+        principal_name: identity.principal_name,
+        assumed_role_arn: identity.assumed_role_arn,
+        identity_source: identity.identity_source,
+        source_ip: str_field(&rec, "sourceIPAddress"),
+        user_agent: str_field(&rec, "userAgent"),
+        error_code: str_field(&rec, "errorCode"),
+        read_only: rec.get("readOnly").and_then(Value::as_bool),
+        management_event: Some(is_management),
+        s3_object_key: Some(key.to_string()),
+        raw: rec,
+        created_at: now,
+    })
 }
 
 /// The identity block derived from a CloudTrail record's `userIdentity` (plus the
