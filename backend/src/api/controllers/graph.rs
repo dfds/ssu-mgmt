@@ -101,39 +101,58 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
         "db.query",
         otel.kind = "client",
         db.system = "postgresql",
-        op = "graph.aggregate"
+        op = "graph.aggregate",
+        graph.mode = %mode,
+        entity.id = %actor.as_deref().unwrap_or("")
     );
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let _g = span.enter();
         let mut conn = pool.get()?;
         let floor = Utc::now() - Duration::days(7);
 
+        let q = |op: &'static str, stmt: &'static str| {
+            tracing::info_span!(
+                "db.query",
+                otel.kind = "client",
+                db.system = "postgresql",
+                op = op,
+                graph.mode = %mode,
+                db.statement = stmt
+            )
+        };
+
         // --- actor↔source edges, scoped by mode -----------------------------
         let edges: Vec<EdgeRow> = match mode.as_str() {
-            "entity" => diesel::sql_query(
-                "SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS weight, \
+            "entity" => {
+                let sql = "SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS weight, \
                         count(*) FILTER (WHERE e.status = 'failure') AS failures \
                  FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                  WHERE aa.actor_id = $1 AND e.ts >= $2 \
-                 GROUP BY aa.actor_id, e.source",
-            )
-            .bind::<Text, _>(actor.as_deref().unwrap_or(""))
-            .bind::<Timestamptz, _>(floor)
-            .load(&mut conn)?,
-            "investigate" => diesel::sql_query(
-                "SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS weight, \
+                 GROUP BY aa.actor_id, e.source";
+                q("graph.edges", sql).in_scope(|| {
+                    diesel::sql_query(sql)
+                        .bind::<Text, _>(actor.as_deref().unwrap_or(""))
+                        .bind::<Timestamptz, _>(floor)
+                        .load(&mut conn)
+                })?
+            }
+            "investigate" => {
+                let sql = "SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS weight, \
                         count(*) FILTER (WHERE e.status = 'failure') AS failures \
                  FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                  WHERE e.ts >= $2 AND ($1 = '' OR aa.actor_id ILIKE '%' || $1 || '%') \
                  GROUP BY aa.actor_id, e.source \
-                 ORDER BY weight DESC LIMIT 400",
-            )
-            .bind::<Text, _>(actor.as_deref().unwrap_or(""))
-            .bind::<Timestamptz, _>(floor)
-            .load(&mut conn)?,
+                 ORDER BY weight DESC LIMIT 400";
+                q("graph.edges", sql).in_scope(|| {
+                    diesel::sql_query(sql)
+                        .bind::<Text, _>(actor.as_deref().unwrap_or(""))
+                        .bind::<Timestamptz, _>(floor)
+                        .load(&mut conn)
+                })?
+            }
             // surface (default): top actors by risk then activity ↔ sources.
-            _ => diesel::sql_query(
-                "WITH top_actors AS ( \
+            _ => {
+                let sql = "WITH top_actors AS ( \
                     SELECT aa.actor_id AS actor_id, count(*) AS activity \
                     FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                     WHERE e.ts >= $1 GROUP BY aa.actor_id \
@@ -146,10 +165,10 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
                  FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                  JOIN chosen c ON c.actor_id = aa.actor_id \
                  WHERE e.ts >= $1 \
-                 GROUP BY aa.actor_id, e.source",
-            )
-            .bind::<Timestamptz, _>(floor)
-            .load(&mut conn)?,
+                 GROUP BY aa.actor_id, e.source";
+                q("graph.edges", sql)
+                    .in_scope(|| diesel::sql_query(sql).bind::<Timestamptz, _>(floor).load(&mut conn))?
+            }
         };
 
         let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
@@ -191,15 +210,16 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
         // --- entity mode: add IP nodes + peer actors (shared infrastructure) --
         if mode == "entity" {
             let a = actor.as_deref().unwrap_or("");
-            let ips: Vec<IpRow> = diesel::sql_query(
-                "SELECT e.source_ip AS ip, count(*) AS weight \
+            let ips_sql = "SELECT e.source_ip AS ip, count(*) AS weight \
                  FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                  WHERE aa.actor_id = $1 AND e.source_ip IS NOT NULL AND e.ts >= $2 \
-                 GROUP BY e.source_ip ORDER BY weight DESC LIMIT 10",
-            )
-            .bind::<Text, _>(a)
-            .bind::<Timestamptz, _>(floor)
-            .load(&mut conn)?;
+                 GROUP BY e.source_ip ORDER BY weight DESC LIMIT 10";
+            let ips: Vec<IpRow> = q("graph.ips", ips_sql).in_scope(|| {
+                diesel::sql_query(ips_sql)
+                    .bind::<Text, _>(a)
+                    .bind::<Timestamptz, _>(floor)
+                    .load(&mut conn)
+            })?;
 
             let ip_list: Vec<String> = ips.iter().filter_map(|r| r.ip.clone()).collect();
             for r in &ips {
@@ -222,16 +242,17 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
             }
 
             if !ip_list.is_empty() {
-                let peers: Vec<PeerRow> = diesel::sql_query(
-                    "SELECT e.source_ip AS ip, aa.actor_id AS peer, count(*) AS weight \
+                let peers_sql = "SELECT e.source_ip AS ip, aa.actor_id AS peer, count(*) AS weight \
                      FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
                      WHERE e.source_ip = ANY($1) AND aa.actor_id <> $2 AND e.ts >= $3 \
-                     GROUP BY e.source_ip, aa.actor_id ORDER BY weight DESC LIMIT 50",
-                )
-                .bind::<Array<Text>, _>(&ip_list)
-                .bind::<Text, _>(a)
-                .bind::<Timestamptz, _>(floor)
-                .load(&mut conn)?;
+                     GROUP BY e.source_ip, aa.actor_id ORDER BY weight DESC LIMIT 50";
+                let peers: Vec<PeerRow> = q("graph.peers", peers_sql).in_scope(|| {
+                    diesel::sql_query(peers_sql)
+                        .bind::<Array<Text>, _>(&ip_list)
+                        .bind::<Text, _>(a)
+                        .bind::<Timestamptz, _>(floor)
+                        .load(&mut conn)
+                })?;
                 for p in &peers {
                     if let Some(ip) = &p.ip {
                         actor_ids.insert(p.peer.clone());
@@ -250,12 +271,10 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
         // --- actor node metadata (label + risk) -----------------------------
         let id_vec: Vec<String> = actor_ids.iter().cloned().collect();
         if !id_vec.is_empty() {
-            let metas: Vec<ActorMeta> = diesel::sql_query(
-                "SELECT a.id AS id, COALESCE(a.display_name, a.id) AS label, a.kind AS kind, COALESCE(r.score, 0) AS score \
-                 FROM actors a LEFT JOIN risk_scores r ON r.actor_id = a.id WHERE a.id = ANY($1)",
-            )
-            .bind::<Array<Text>, _>(&id_vec)
-            .load(&mut conn)?;
+            let metas_sql = "SELECT a.id AS id, COALESCE(a.display_name, a.id) AS label, a.kind AS kind, COALESCE(r.score, 0) AS score \
+                 FROM actors a LEFT JOIN risk_scores r ON r.actor_id = a.id WHERE a.id = ANY($1)";
+            let metas: Vec<ActorMeta> = q("graph.actor_meta", metas_sql)
+                .in_scope(|| diesel::sql_query(metas_sql).bind::<Array<Text>, _>(&id_vec).load(&mut conn))?;
             for m in metas {
                 let node_id = format!("actor:{}", m.id);
                 nodes.insert(node_id.clone(), Node {
