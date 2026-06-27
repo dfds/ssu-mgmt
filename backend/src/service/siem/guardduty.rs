@@ -4,7 +4,7 @@ use anyhow::Context;
 use aws_sdk_guardduty::config::Region;
 use aws_sdk_guardduty::types::{Condition, FindingCriteria, OrderBy, SortCriteria};
 use aws_sdk_guardduty::Client;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Nullable, Text, Timestamptz};
 use log::{error, info};
@@ -44,7 +44,8 @@ pub async fn run(cancel: CancellationToken, conf: GuarddutyConfig, pool: DbPool)
     );
 
     loop {
-        if let Err(e) = run_once(&shared, &regions, &pool).await {
+        if let Err(e) = run_once(&shared, &regions, &pool, conf.backfill_window_days, &cancel).await
+        {
             error!("guardduty sweep failed: {:#}", e);
             let pool = pool.clone();
             let msg = format!("{:#}", e);
@@ -82,6 +83,8 @@ async fn run_once(
     shared: &aws_config::SdkConfig,
     regions: &[String],
     pool: &DbPool,
+    backfill_window_days: i64,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let since = {
         let pool = pool.clone();
@@ -93,9 +96,29 @@ async fn run_once(
         .context("join")??
     };
 
+    // First run (no watermark) would otherwise fetch *every* finding the detector
+    // has ever held — on an org delegated-admin/aggregator that is the whole org's
+    // history, which OOMs the pod. Floor the cold-start scan to a bounded lookback;
+    // once a watermark exists, use it instead. `<= 0` keeps the old unbounded scan.
+    let effective_since = since.or_else(|| {
+        (backfill_window_days > 0).then(|| Utc::now() - Duration::days(backfill_window_days))
+    });
+    if since.is_none() {
+        match effective_since {
+            Some(floor) => info!(
+                "guardduty cold start: no watermark, bounding first sweep to updatedAt >= {} ({}d lookback)",
+                floor, backfill_window_days
+            ),
+            None => info!("guardduty cold start: no watermark and backfill_window_days <= 0 — unbounded scan"),
+        }
+    }
+
     let mut total = 0usize;
     let mut max_updated: Option<DateTime<Utc>> = since;
     for region in regions {
+        if cancel.is_cancelled() {
+            break;
+        }
         let span = tracing::info_span!(
             "guardduty.region",
             otel.kind = "client",
@@ -117,7 +140,8 @@ async fn run_once(
             let mut region_latest: Option<DateTime<Utc>> = None;
             for detector_id in detectors.detector_ids() {
                 let (applied, latest) =
-                    sweep_detector(&client, detector_id, region, since, pool).await?;
+                    sweep_detector(&client, detector_id, region, effective_since, pool, cancel)
+                        .await?;
                 region_total += applied;
                 region_latest = max_opt(region_latest, latest);
             }
@@ -161,6 +185,7 @@ async fn sweep_detector(
     region: &str,
     since: Option<DateTime<Utc>>,
     pool: &DbPool,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<(usize, Option<DateTime<Utc>>)> {
     let criteria = since.map(|s| {
         let cond = Condition::builder()
@@ -175,11 +200,19 @@ async fn sweep_detector(
         .order_by(OrderBy::Asc)
         .build();
 
-    // ListFindings returns at most 50 finding IDs per page; paginate via the
-    // continuation token to collect them all.
-    let mut ids: Vec<String> = Vec::new();
+    // Stream page-by-page and flush each page immediately rather than accumulating
+    // the detector's *entire* finding set in memory first. On an org delegated-admin
+    // detector the full set is hundreds of thousands of findings — buffering it all
+    // (ids + mapped rows) is what OOMs the pod. ListFindings returns at most 50 IDs
+    // per page, so peak memory here is one page (≤50 findings), regardless of how
+    // large the (bounded) lookback window is.
+    let mut applied = 0usize;
+    let mut max_updated_at: Option<DateTime<Utc>> = None;
     let mut next_token: Option<String> = None;
     loop {
+        if cancel.is_cancelled() {
+            break;
+        }
         let listed = client
             .list_findings()
             .detector_id(detector_id)
@@ -189,68 +222,72 @@ async fn sweep_detector(
             .send()
             .await
             .with_context(|| format!("list findings {}", detector_id))?;
-        ids.extend(listed.finding_ids().iter().cloned());
-        match listed.next_token() {
-            Some(t) if !t.is_empty() => next_token = Some(t.to_string()),
-            _ => break,
+        let ids: Vec<String> = listed.finding_ids().to_vec();
+        let page_token = listed
+            .next_token()
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+
+        // GetFindings accepts at most 50 finding IDs per request; a ListFindings page
+        // is already ≤50, but chunk defensively in case that ever changes.
+        let mut rows: Vec<FindingRow> = Vec::new();
+        for chunk in ids.chunks(50) {
+            let got = client
+                .get_findings()
+                .detector_id(detector_id)
+                .set_finding_ids(Some(chunk.to_vec()))
+                .send()
+                .await
+                .with_context(|| format!("get findings {}", detector_id))?;
+
+            for f in got.findings() {
+                let id = match f.id() {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                let severity = f.severity().unwrap_or(0.0);
+                let archived = f.service().and_then(|s| s.archived()).unwrap_or(false);
+                let status = if archived { "resolved" } else { "open" };
+                let (first_seen, last_seen) = finding_window(f);
+                let updated_at = f
+                    .updated_at()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&Utc));
+                max_updated_at = max_opt(max_updated_at, updated_at);
+                rows.push(FindingRow {
+                    fingerprint: format!("guardduty:{}", id),
+                    severity: severity_label(severity).to_string(),
+                    title: f.title().unwrap_or("GuardDuty finding").to_string(),
+                    description: f.description().map(str::to_string),
+                    first_seen,
+                    last_seen,
+                    event_count: f.service().and_then(|s| s.count()).unwrap_or(1) as i64,
+                    status,
+                    evidence: serde_json::json!({
+                        "type": f.r#type(),
+                        "severity": severity,
+                        "region": region,
+                        "account_id": f.account_id(),
+                        "archived": archived,
+                    }),
+                });
+            }
         }
-    }
-    if ids.is_empty() {
-        return Ok((0, None));
-    }
 
-    // GetFindings accepts at most 50 finding IDs per request — chunk the list.
-    let mut rows: Vec<FindingRow> = Vec::new();
-    let mut max_updated_at: Option<DateTime<Utc>> = None;
-    for chunk in ids.chunks(50) {
-        let got = client
-            .get_findings()
-            .detector_id(detector_id)
-            .set_finding_ids(Some(chunk.to_vec()))
-            .send()
-            .await
-            .with_context(|| format!("get findings {}", detector_id))?;
-
-        for f in got.findings() {
-            let id = match f.id() {
-                Some(id) => id.to_string(),
-                None => continue,
-            };
-            let severity = f.severity().unwrap_or(0.0);
-            let archived = f.service().and_then(|s| s.archived()).unwrap_or(false);
-            let status = if archived { "resolved" } else { "open" };
-            let (first_seen, last_seen) = finding_window(f);
-            let updated_at = f
-                .updated_at()
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|d| d.with_timezone(&Utc));
-            max_updated_at = max_opt(max_updated_at, updated_at);
-            rows.push(FindingRow {
-                fingerprint: format!("guardduty:{}", id),
-                severity: severity_label(severity).to_string(),
-                title: f.title().unwrap_or("GuardDuty finding").to_string(),
-                description: f.description().map(str::to_string),
-                first_seen,
-                last_seen,
-                event_count: f.service().and_then(|s| s.count()).unwrap_or(1) as i64,
-                status,
-                evidence: serde_json::json!({
-                    "type": f.r#type(),
-                    "severity": severity,
-                    "region": region,
-                    "account_id": f.account_id(),
-                    "archived": archived,
-                }),
-            });
+        // Flush this page immediately, then advance to the next page. Peak memory
+        // stays at one page (≤50 findings) rather than the detector's whole set.
+        if rows.is_empty() {
+            match page_token {
+                Some(t) => {
+                    next_token = Some(t);
+                    continue;
+                }
+                None => break,
+            }
         }
-    }
-
-    if rows.is_empty() {
-        return Ok((0, max_updated_at));
-    }
-    let count = rows.len();
-    let pool = pool.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let count = rows.len();
+        let pool = pool.clone();
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut conn = pool.get().context("pool get")?;
         conn.transaction::<_, anyhow::Error, _>(|conn| {
             for r in &rows {
@@ -293,8 +330,15 @@ async fn sweep_detector(
     })
     .await
     .context("join")??;
+        applied += count;
 
-    Ok((count, max_updated_at))
+        match page_token {
+            Some(t) => next_token = Some(t),
+            None => break,
+        }
+    }
+
+    Ok((applied, max_updated_at))
 }
 
 struct FindingRow {

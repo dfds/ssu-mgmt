@@ -354,6 +354,13 @@ pub struct GuarddutyConfig {
     pub assume_role_arn: String,
     /// STS session name used when `assume_role_arn` is set.
     pub assume_role_session_name: String,
+    /// First-run lookback bound, in days. When no watermark exists yet (fresh DB),
+    /// the sweep would otherwise fetch *every* finding the detector has ever held —
+    /// on an org delegated-admin/aggregator detector that is the whole org's history
+    /// (hundreds of thousands of findings), which OOMs the pod. This caps the cold
+    /// start to `updatedAt >= now() - backfill_window_days`. Once a watermark is set,
+    /// subsequent sweeps use it instead. `<= 0` → unbounded (the old behaviour).
+    pub backfill_window_days: i64,
 }
 
 impl Default for GuarddutyConfig {
@@ -363,6 +370,7 @@ impl Default for GuarddutyConfig {
             interval_secs: 900,
             assume_role_arn: String::new(),
             assume_role_session_name: "ssu-mgmt-guardduty".to_owned(),
+            backfill_window_days: 30,
         }
     }
 }
