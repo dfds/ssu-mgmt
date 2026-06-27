@@ -672,6 +672,8 @@ fn set_defaults(builder: ConfigBuilder<DefaultState>) -> ConfigBuilder<DefaultSt
         .unwrap()
         .set_default("guardduty.assume_role_session_name", "ssu-mgmt-guardduty")
         .unwrap()
+        .set_default("guardduty.backfill_window_days", 30)
+        .unwrap()
         // Leader election for the singleton background workers.
         .set_default("worker.leader_election", "true")
         .unwrap()

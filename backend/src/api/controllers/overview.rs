@@ -59,7 +59,8 @@ pub(crate) fn load_kpis(conn: &mut PgConnection) -> anyhow::Result<serde_json::V
     let since = Utc::now() - Duration::hours(24);
     let k: KpiRow = diesel::sql_query(
         "SELECT \
-           (SELECT count(*) FROM ssumgmt_events WHERE status = 'failure' AND ts >= $1) AS failed_auth_24h, \
+           (  (SELECT count(*) FROM cloudtrail_events WHERE error_code IS NOT NULL AND event_time >= $1) \
+            + (SELECT count(*) FROM ssumgmt_audit WHERE status = 'failure' AND ts >= $1)) AS failed_auth_24h, \
            (SELECT count(*) FROM cloudtrail_events WHERE event_name IN ('DeleteUser','DeleteLoginProfile','DeactivateMFADevice') AND event_time >= $1) AS deactivated_24h, \
            (SELECT count(*) FROM alerts WHERE status IN ('open','acked') AND severity = 'critical') AS critical_alerts, \
            (SELECT count(*) FROM alerts WHERE status = 'open') AS open_alerts, \

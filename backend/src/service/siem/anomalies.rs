@@ -204,9 +204,10 @@ fn maintain_first_seen(conn: &mut PgConnection) -> anyhow::Result<()> {
         .and_then(|wm| wm.last_event_at)
         .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch"));
 
+
     diesel::sql_query(
-        "INSERT INTO actor_source_first_seen (actor, source, first_ts) \
-         SELECT actor, source, min(ts) AS first_ts FROM ( \
+        "INSERT INTO actor_source_first_seen (actor, source, first_ts, last_ts) \
+         SELECT actor, source, min(ts) AS first_ts, max(ts) AS last_ts FROM ( \
            SELECT principal AS actor, 'selfservice'::text AS source, (timestamp AT TIME ZONE 'UTC') AS ts \
              FROM audit_records_selfservice WHERE created_at > $1 AT TIME ZONE 'UTC' \
            UNION ALL \
@@ -217,7 +218,9 @@ fn maintain_first_seen(conn: &mut PgConnection) -> anyhow::Result<()> {
              FROM github_audit_events WHERE created_at > $1 \
          ) x WHERE actor IS NOT NULL GROUP BY actor, source \
          ON CONFLICT (actor, source) DO UPDATE SET \
-           first_ts = LEAST(actor_source_first_seen.first_ts, EXCLUDED.first_ts), updated_at = now()",
+           first_ts = LEAST(actor_source_first_seen.first_ts, EXCLUDED.first_ts), \
+           last_ts  = GREATEST(actor_source_first_seen.last_ts, EXCLUDED.last_ts), \
+           updated_at = now()",
     )
     .bind::<Timestamptz, _>(w)
     .execute(conn)

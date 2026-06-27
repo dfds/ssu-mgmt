@@ -414,13 +414,10 @@ pub fn reconcile(
         .filter_map(|m| m.object_id.as_ref().map(|o| (o.to_lowercase(), m.clone())))
         .collect();
 
-    // Distinct actor activity across all sources in the window.
     let activity: Vec<ActorActivity> = diesel::sql_query(
-        "SELECT source, actor, min(ts) AS first_seen, max(ts) AS last_active \
-         FROM ssumgmt_events \
-         WHERE actor IS NOT NULL AND actor <> '' AND ts >= $1 \
-           AND source <> 'ssu-mgmt' \
-         GROUP BY source, actor",
+        "SELECT source, actor, first_ts AS first_seen, last_ts AS last_active \
+         FROM actor_source_first_seen \
+         WHERE last_ts >= $1 AND actor <> '' AND source <> 'ssu-mgmt'",
     )
     .bind::<Timestamptz, _>(floor)
     .load(conn)

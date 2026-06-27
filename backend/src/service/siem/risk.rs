@@ -46,24 +46,40 @@ pub fn compute(
     let window_floor = now - Duration::days(siem.window_days.max(1));
     let h24 = now - Duration::hours(24);
     let dormant_floor = now - Duration::days(siem.dormant_days.max(1));
-
+    
     let factors: Vec<Factors> = diesel::sql_query(
-        "WITH ev AS ( \
-            SELECT aa.actor_id AS actor_id, e.ts AS ts, e.status AS status \
-            FROM ssumgmt_events e \
-            JOIN actor_aliases aa ON aa.alias = e.actor \
-            WHERE e.ts >= $1 AND e.source <> 'ssu-mgmt' \
+        "WITH \
+         fa AS ( \
+            SELECT aa.actor_id, count(*) AS n \
+            FROM cloudtrail_events c \
+            JOIN actor_aliases aa ON aa.alias = COALESCE(c.principal_name, c.principal_arn) \
+            WHERE c.error_code IS NOT NULL AND c.event_time >= $2 \
+            GROUP BY aa.actor_id \
          ), \
-         fa AS (SELECT actor_id, count(*) AS n FROM ev WHERE status = 'failure' AND ts >= $2 GROUP BY actor_id), \
          oh AS ( \
-            SELECT actor_id, \
-              count(*) FILTER (WHERE EXTRACT(hour FROM ts) >= $3 OR EXTRACT(hour FROM ts) < $4) AS off, \
-              count(*) AS total \
-            FROM ev GROUP BY actor_id \
+            SELECT aa.actor_id, sum(dc.n) AS total, sum(d.off) AS off \
+            FROM actor_daily_counts dc \
+            JOIN actor_aliases aa ON aa.alias = dc.actor \
+            CROSS JOIN LATERAL ( \
+              SELECT COALESCE(sum(h), 0) AS off \
+              FROM unnest(dc.hourly) WITH ORDINALITY u(h, idx) \
+              WHERE (idx - 1) >= $3 OR (idx - 1) < $4 \
+            ) d \
+            WHERE dc.day >= $1::date \
+            GROUP BY aa.actor_id \
          ), \
-         recent AS ( \
-            SELECT actor_id, max(ts) AS last_ts, max(ts) FILTER (WHERE ts < $2) AS prev_ts \
-            FROM ev GROUP BY actor_id \
+         last_seen AS ( \
+            SELECT aa.actor_id, max(f.last_ts) AS last_ts \
+            FROM actor_source_first_seen f \
+            JOIN actor_aliases aa ON aa.alias = f.actor \
+            GROUP BY aa.actor_id \
+         ), \
+         prior AS ( \
+            SELECT aa.actor_id, max(dc.day) AS prior_day \
+            FROM actor_daily_counts dc \
+            JOIN actor_aliases aa ON aa.alias = dc.actor \
+            WHERE dc.day < current_date AND dc.n > 0 \
+            GROUP BY aa.actor_id \
          ), \
          pg AS (SELECT actor_id, count(*) AS n FROM grants WHERE privileged AND revoked_at IS NULL AND actor_id IS NOT NULL GROUP BY actor_id), \
          fs AS (SELECT actor_id, count(*) AS n FROM sessions WHERE status = 'flagged' AND actor_id IS NOT NULL GROUP BY actor_id), \
@@ -72,17 +88,18 @@ pub fn compute(
            COALESCE(fa.n, 0) AS failed_auth, \
            COALESCE(pg.n, 0) AS priv_grants, \
            CASE WHEN COALESCE(oh.total, 0) > 0 THEN oh.off::float8 / oh.total ELSE 0 END AS off_hours_ratio, \
-           (CASE WHEN recent.last_ts >= $2 AND (recent.prev_ts IS NULL OR recent.prev_ts < $5) AND a.first_seen < $5 THEN 1 ELSE 0 END)::bigint AS dormant, \
+           (CASE WHEN last_seen.last_ts >= $2 AND (prior.prior_day IS NULL OR prior.prior_day < $5::date) AND a.first_seen < $5 THEN 1 ELSE 0 END)::bigint AS dormant, \
            COALESCE(fs.n, 0) AS flagged_sessions, \
            COALESCE(array_length(a.sources, 1), 0)::bigint AS source_diversity, \
            COALESCE(an.n, 0) AS anomalies \
          FROM actors a \
-         LEFT JOIN fa     ON fa.actor_id = a.id \
-         LEFT JOIN oh     ON oh.actor_id = a.id \
-         LEFT JOIN recent ON recent.actor_id = a.id \
-         LEFT JOIN pg     ON pg.actor_id = a.id \
-         LEFT JOIN fs     ON fs.actor_id = a.id \
-         LEFT JOIN an     ON an.actor_id = a.id",
+         LEFT JOIN fa        ON fa.actor_id = a.id \
+         LEFT JOIN oh        ON oh.actor_id = a.id \
+         LEFT JOIN last_seen ON last_seen.actor_id = a.id \
+         LEFT JOIN prior     ON prior.actor_id = a.id \
+         LEFT JOIN pg        ON pg.actor_id = a.id \
+         LEFT JOIN fs        ON fs.actor_id = a.id \
+         LEFT JOIN an        ON an.actor_id = a.id",
     )
     .bind::<Timestamptz, _>(window_floor)
     .bind::<Timestamptz, _>(h24)
