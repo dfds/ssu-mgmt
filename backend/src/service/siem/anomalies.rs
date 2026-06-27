@@ -249,34 +249,37 @@ fn maintain_daily_counts(conn: &mut PgConnection) -> anyhow::Result<()> {
         .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch"));
 
     diesel::sql_query(
-        "INSERT INTO actor_daily_counts (actor, day, n, hourly) \
+        "INSERT INTO actor_daily_counts (actor, day, n, hourly, failed) \
          WITH boundary AS (SELECT now() - ($2 || ' minutes')::interval AS b), \
          ev AS ( \
            SELECT principal AS actor, date_trunc('day', timestamp AT TIME ZONE 'UTC')::date AS day, \
-                  extract(hour FROM (timestamp AT TIME ZONE 'UTC'))::int AS h \
+                  extract(hour FROM (timestamp AT TIME ZONE 'UTC'))::int AS h, 0 AS fail \
              FROM audit_records_selfservice, boundary \
              WHERE created_at > $1 AT TIME ZONE 'UTC' AND created_at <= boundary.b AT TIME ZONE 'UTC' \
            UNION ALL \
            SELECT COALESCE(principal_name, principal_arn), date_trunc('day', event_time)::date, \
-                  extract(hour FROM event_time)::int \
+                  extract(hour FROM event_time)::int, \
+                  (CASE WHEN error_code IS NOT NULL THEN 1 ELSE 0 END) \
              FROM cloudtrail_events, boundary WHERE created_at > $1 AND created_at <= boundary.b \
            UNION ALL \
-           SELECT actor, date_trunc('day', event_time)::date, extract(hour FROM event_time)::int \
+           SELECT actor, date_trunc('day', event_time)::date, extract(hour FROM event_time)::int, 0 \
              FROM github_audit_events, boundary WHERE created_at > $1 AND created_at <= boundary.b \
          ), \
-         per_hour AS (SELECT actor, day, h, count(*)::bigint AS cnt FROM ev WHERE actor IS NOT NULL GROUP BY actor, day, h), \
+         per_hour AS (SELECT actor, day, h, count(*)::bigint AS cnt, sum(fail)::bigint AS fcnt \
+                      FROM ev WHERE actor IS NOT NULL GROUP BY actor, day, h), \
          keys AS (SELECT DISTINCT actor, day FROM per_hour), \
          filled AS ( \
-           SELECT k.actor, k.day, g.h, COALESCE(ph.cnt, 0) AS cnt \
+           SELECT k.actor, k.day, g.h, COALESCE(ph.cnt, 0) AS cnt, COALESCE(ph.fcnt, 0) AS fcnt \
              FROM keys k CROSS JOIN generate_series(0, 23) g(h) \
              LEFT JOIN per_hour ph ON ph.actor = k.actor AND ph.day = k.day AND ph.h = g.h \
          ) \
-         SELECT actor, day, sum(cnt)::bigint, array_agg(cnt ORDER BY h) \
+         SELECT actor, day, sum(cnt)::bigint, array_agg(cnt ORDER BY h), sum(fcnt)::bigint \
            FROM filled GROUP BY actor, day \
          ON CONFLICT (actor, day) DO UPDATE SET \
            n = actor_daily_counts.n + EXCLUDED.n, \
            hourly = (SELECT array_agg(COALESCE(o, 0) + COALESCE(e, 0) ORDER BY ord) \
                      FROM unnest(actor_daily_counts.hourly, EXCLUDED.hourly) WITH ORDINALITY AS t(o, e, ord)), \
+           failed = actor_daily_counts.failed + EXCLUDED.failed, \
            updated_at = now()",
     )
     .bind::<Timestamptz, _>(w)

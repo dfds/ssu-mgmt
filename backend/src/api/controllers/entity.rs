@@ -54,9 +54,6 @@ struct IdentityContextRow {
     identity_source: Option<String>,
     #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
     assumed_role_arn: Option<String>,
-    #[diesel(sql_type = BigInt)]
-    #[allow(dead_code)]
-    n: i64,
 }
 
 async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> Response {
@@ -107,36 +104,51 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
                 .select(Anomaly::as_select())
                 .load(&mut conn)?
         };
-
+        
         let activity: Vec<SsuMgmtEvent> = diesel::sql_query(
             "SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
-             FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
+             FROM actor_aliases aa CROSS JOIN LATERAL ( \
+                 SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
+                 FROM ssumgmt_events e WHERE e.actor = aa.alias ORDER BY e.ts DESC LIMIT 50 \
+             ) e \
              WHERE aa.actor_id = $1 ORDER BY e.ts DESC LIMIT 50",
         )
         .bind::<Text, _>(&id)
         .load(&mut conn)?;
 
-        let now = Utc::now();
         let stats: StatsRow = diesel::sql_query(
             "SELECT \
-               (SELECT count(*) FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor WHERE aa.actor_id = $1 AND e.ts >= $2) AS events_24h, \
-               (SELECT count(*) FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor WHERE aa.actor_id = $1 AND e.ts >= $3) AS events_7d, \
-               (SELECT count(*) FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor WHERE aa.actor_id = $1 AND e.status = 'failure' AND e.ts >= $3) AS failed_7d, \
+               (SELECT COALESCE(sum(h.cnt), 0) FROM actor_daily_counts dc \
+                  JOIN actor_aliases aa ON aa.alias = dc.actor \
+                  CROSS JOIN LATERAL unnest(dc.hourly) WITH ORDINALITY AS h(cnt, idx) \
+                  WHERE aa.actor_id = $1 \
+                    AND dc.day >= ((now() AT TIME ZONE 'UTC')::date - 1) \
+                    AND (dc.day::timestamp + make_interval(hours => (idx - 1)::int)) >= ((now() AT TIME ZONE 'UTC') - interval '24 hours'))::bigint AS events_24h, \
+               (SELECT COALESCE(sum(dc.n), 0) FROM actor_daily_counts dc \
+                  JOIN actor_aliases aa ON aa.alias = dc.actor \
+                  WHERE aa.actor_id = $1 AND dc.day >= ((now() AT TIME ZONE 'UTC')::date - 6))::bigint AS events_7d, \
+               (SELECT COALESCE(sum(dc.failed), 0) FROM actor_daily_counts dc \
+                  JOIN actor_aliases aa ON aa.alias = dc.actor \
+                  WHERE aa.actor_id = $1 AND dc.day >= ((now() AT TIME ZONE 'UTC')::date - 6))::bigint AS failed_7d, \
                (SELECT count(*) FROM sessions WHERE actor_id = $1) AS sessions, \
                (SELECT count(*) FROM grants WHERE actor_id = $1 AND privileged AND revoked_at IS NULL) AS priv_grants, \
-               (SELECT count(*) FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor WHERE aa.actor_id = $1) AS activity_total",
+               (SELECT COALESCE(sum(dc.n), 0) FROM actor_daily_counts dc \
+                  JOIN actor_aliases aa ON aa.alias = dc.actor \
+                  WHERE aa.actor_id = $1)::bigint AS activity_total",
         )
         .bind::<Text, _>(&id)
-        .bind::<Timestamptz, _>(now - Duration::hours(24))
-        .bind::<Timestamptz, _>(now - Duration::days(7))
         .get_result(&mut conn)?;
 
-
         let ctx_rows: Vec<IdentityContextRow> = diesel::sql_query(
-            "SELECT c.identity_source AS identity_source, c.assumed_role_arn AS assumed_role_arn, count(*) AS n \
-             FROM cloudtrail_events c JOIN actor_aliases aa ON aa.alias = COALESCE(c.principal_name, c.principal_arn) \
-             WHERE aa.actor_id = $1 AND (c.identity_source IS NOT NULL OR c.assumed_role_arn IS NOT NULL) \
-             GROUP BY c.identity_source, c.assumed_role_arn ORDER BY n DESC LIMIT 50",
+            "SELECT DISTINCT s.identity_source AS identity_source, s.assumed_role_arn AS assumed_role_arn \
+             FROM actor_aliases aa CROSS JOIN LATERAL ( \
+                 SELECT c.identity_source, c.assumed_role_arn \
+                 FROM cloudtrail_events c \
+                 WHERE COALESCE(c.principal_name, c.principal_arn) = aa.alias \
+                   AND (c.identity_source IS NOT NULL OR c.assumed_role_arn IS NOT NULL) \
+                 ORDER BY c.event_time DESC LIMIT 5000 \
+             ) s \
+             WHERE aa.actor_id = $1 LIMIT 200",
         )
         .bind::<Text, _>(&id)
         .load(&mut conn)?;
@@ -222,8 +234,13 @@ async fn activity_handler(
         let _g = span.enter();
         let mut conn = crate::db::conn(&pool)?;
 
+        // Same per-alias LATERAL as the bundle, with limit/offset. The inner LIMIT is
+        // limit+offset so each alias yields enough rows for the outer offset to page.
         let activity_sql = "SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
-             FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
+             FROM actor_aliases aa CROSS JOIN LATERAL ( \
+                 SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
+                 FROM ssumgmt_events e WHERE e.actor = aa.alias ORDER BY e.ts DESC LIMIT ($2 + $3) \
+             ) e \
              WHERE aa.actor_id = $1 ORDER BY e.ts DESC LIMIT $2 OFFSET $3";
         span.record("db.statement", activity_sql);
         let rows: Vec<SsuMgmtEvent> = diesel::sql_query(activity_sql)
@@ -232,8 +249,12 @@ async fn activity_handler(
         .bind::<BigInt, _>(offset)
         .load(&mut conn)?;
 
+        // Total from the actor_daily_counts cache (all-history sum) rather than a
+        // full count over the union view. Like the bundle's activity_total, this can
+        // exceed the paginatable rows if retention later prunes events.
         let total: CountRow = diesel::sql_query(
-            "SELECT count(*) AS n FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor WHERE aa.actor_id = $1",
+            "SELECT COALESCE(sum(dc.n), 0)::bigint AS n FROM actor_daily_counts dc \
+             JOIN actor_aliases aa ON aa.alias = dc.actor WHERE aa.actor_id = $1",
         )
         .bind::<Text, _>(&id)
         .get_result(&mut conn)?;
