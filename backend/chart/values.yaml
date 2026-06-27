@@ -19,12 +19,28 @@ app:
       value: info
     - name: SSU__MESSAGING__GROUP_ID
       value: cloudengineering.ssu-mgmt
-    # jemalloc tuning (the binary uses jemalloc as its global allocator). Enable the
-    # background purge thread and shorten the decay so freed memory is returned to the OS
-    # promptly — keeps RSS down on the long-running ingest/SIEM workers. tikv-jemallocator
-    # reads the `_RJEM_`-prefixed env var.
-    - name: _RJEM_MALLOC_CONF
-      value: "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
+    # NOTE: _RJEM_MALLOC_CONF is rendered by the deployment template (see `jemalloc.conf`
+    # below) so the heap-capture toggle can append jemalloc profiling options to it.
+
+# jemalloc tuning (the binary uses jemalloc as its global allocator). Enable the
+# background purge thread and shorten the decay so freed memory is returned to the OS
+# promptly — keeps RSS down on the long-running ingest/SIEM workers. tikv-jemallocator
+# reads the `_RJEM_`-prefixed env var. Heap-profiling options are appended automatically
+# when profiling.heapCapture is true.
+jemalloc:
+  conf: "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
+
+# One-off heap-capture mode for diagnosing an OOM. When heapCapture is true the deployment:
+#   - sets SSU__PROFILING__ENABLE=true (enables /debug/heap + /debug/pprof on :9001),
+#   - turns on jemalloc sampling heap profiling and auto-dumps every ~1 GiB allocated
+#     (lg_prof_interval:30) to an emptyDir at /dump — which survives the in-place OOM-kill
+#     container restart, so a 2-second spike-then-die is captured without timing a curl.
+# Reproduce the OOM once, then pull the dumps and attribute the growth:
+#   kubectl cp <pod>:/dump ./dump
+#   jeprof --base=./dump/jeprof.<pid>.<n-1>.heap ./ssu_mgmt ./dump/jeprof.<pid>.<n>.heap
+# Leave false in normal operation (sampling has a small but non-zero overhead).
+profiling:
+  heapCapture: false
 
 imagePullSecrets: []
 nameOverride: ""
