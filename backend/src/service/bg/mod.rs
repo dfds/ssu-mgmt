@@ -77,7 +77,13 @@ pub fn start(
                         rows = insert_payload.len()
                     )
                     .entered();
-                    let mut db_conn = pool.get().unwrap();
+                    let mut db_conn = match crate::db::conn(&pool) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("bg flush (self-service): {e}");
+                            return;
+                        }
+                    };
                     let payload: Vec<AuditRecordsSelfserviceInsert> = insert_payload
                         .into_iter()
                         .map(|envelope| {
@@ -146,7 +152,13 @@ pub fn start(
                         rows = audit_payload.len()
                     )
                     .entered();
-                    let mut db_conn = pool.get().unwrap();
+                    let mut db_conn = match crate::db::conn(&pool) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("bg flush (self-audit): {e}");
+                            return;
+                        }
+                    };
                     let chunks: Vec<Vec<SsuMgmtAuditInsert>> =
                         audit_payload.chunks(4000).map(|c| c.to_vec()).collect();
                     for chunk in chunks {

@@ -137,7 +137,13 @@ async fn main() {
 
     db::init(&conf.db).unwrap();
 
+    // Two separate pools: `db_pool` serves the API request handlers only;
+    // `worker_pool` serves the bg writer + background ingest/SIEM workers. A
+    // multi-minute CloudTrail sweep can hold its connections, but only ever
+    // contends on `worker_pool` — the API pool stays available, so the console
+    // no longer hangs/500s while ingest is busy.
     let db_pool = db::build_pool(&conf.db);
+    let worker_pool = db::build_worker_pool(&conf.db);
 
     let ss = misc::services::init();
     ss.write()
@@ -190,10 +196,10 @@ async fn main() {
         bg_s.clone(),
         bg_r.clone(),
         offset_tracker.clone(),
-        db_pool.clone(),
+        worker_pool.clone(),
     );
 
-    let ingest_pool = db_pool.clone();
+    let ingest_pool = worker_pool.clone();
 
     let context = misc::context::Context {
         offset_tracker: offset_tracker.clone(),

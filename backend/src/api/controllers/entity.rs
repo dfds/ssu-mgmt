@@ -220,7 +220,7 @@ async fn activity_handler(
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<serde_json::Value> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
 
         let activity_sql = "SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
              FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
@@ -318,7 +318,7 @@ async fn timeline_handler(
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<TimelineRow>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         let timeline_sql =
             "SELECT date_trunc($1, e.ts) AS bucket, e.source AS source, count(*) AS count \
              FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \

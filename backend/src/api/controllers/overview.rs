@@ -177,7 +177,7 @@ async fn alerts_handler(
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<AlertsResponse> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
 
         // The page of rows (newest-first, limit/offset).
         let mut q = a::alerts.into_boxed();
@@ -258,7 +258,7 @@ async fn anomalies_handler(
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<Anomaly>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         let mut q = an::anomalies
             .filter(an::event_time.ge(from))
             .filter(an::event_time.le(to))
@@ -312,7 +312,7 @@ async fn sources_handler(State(pool): State<DbPool>) -> Response {
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<SourceRow>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         let since = Utc::now() - Duration::days(7);
         let sources_sql = "SELECT source, count(*) AS total, count(*) FILTER (WHERE status = 'failure') AS failures \
              FROM ssumgmt_events WHERE ts >= $1 GROUP BY source ORDER BY total DESC";
@@ -383,7 +383,7 @@ async fn actors_by_risk_handler(
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<ActorRiskRow>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         let actors_sql = "SELECT a.id, a.display_name, a.email, a.team, a.kind, a.origins, a.sources, r.score, r.label, a.last_active \
              FROM risk_scores r JOIN actors a ON a.id = r.actor_id \
              ORDER BY r.score DESC, a.last_active DESC NULLS LAST LIMIT $1";
@@ -432,7 +432,7 @@ async fn ingest_health_handler(State(pool): State<DbPool>) -> Response {
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<IngestHealth>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         load_ingest_health(&mut conn)
     })
     .await;
@@ -519,14 +519,9 @@ async fn timeline_handler(
     let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.timeline", bucket = %bucket, db.statement = tracing::field::Empty);
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<TimelineRow>> {
         let _g = span.enter();
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
+        const ROLLUP_HOUR_THRESHOLD: i64 = 48;
         if bucket_for_query == "day" {
-            // Day buckets read the pre-aggregated rollup (event_timeline_daily,
-            // refreshed by service::timeline) instead of counting the whole
-            // matching slice of the union view — wide windows (14d–90d) would
-            // otherwise scan ~18M+ rows per load. The rollup bucket is already a
-            // UTC-midnight timestamptz; widen `from` to its day start so the
-            // partial first day is included as a full bucket.
             let day_sql = "SELECT bucket, source, count \
                  FROM event_timeline_daily \
                  WHERE bucket >= date_trunc('day', $1 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' \
@@ -537,9 +532,24 @@ async fn timeline_handler(
                 .bind::<Timestamptz, _>(from)
                 .bind::<Timestamptz, _>(to)
                 .load::<TimelineRow>(&mut conn)
+        } else if bucket_for_query == "hour"
+            && (to - from) > Duration::hours(ROLLUP_HOUR_THRESHOLD)
+        {
+            // Wide hour windows (7d) read the hourly rollup — ~168 pre-aggregated
+            // rows per source instead of a ~4s live aggregate over the union view.
+            let hour_sql = "SELECT bucket, source, count \
+                 FROM event_timeline_hourly \
+                 WHERE bucket >= date_trunc('hour', $1 AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' \
+                   AND bucket <= $2 \
+                 ORDER BY bucket ASC";
+            span.record("db.statement", hour_sql);
+            diesel::sql_query(hour_sql)
+                .bind::<Timestamptz, _>(from)
+                .bind::<Timestamptz, _>(to)
+                .load::<TimelineRow>(&mut conn)
         } else {
-            // minute/hour buckets serve short windows (24h/7d) — cheap enough to
-            // count live, and finer than the daily rollup can express.
+            // Narrow minute/hour windows (24h) — cheap enough to count live, and
+            // finer/fresher than the rollup can express.
             let fine_sql = "SELECT date_trunc($1, ts) AS bucket, source, count(*) AS count \
                  FROM ssumgmt_events \
                  WHERE ts >= $2 AND ts <= $3 \

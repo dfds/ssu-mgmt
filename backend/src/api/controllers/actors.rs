@@ -106,7 +106,7 @@ async fn actors_handler(
     );
 
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<ActorsPage> {
-        let mut conn = pool.get().unwrap();
+        let mut conn = crate::db::conn(&pool)?;
         let rows: Vec<ActorListRow> = diesel::sql_query(rows_sql)
             .bind::<Text, _>(&kind)
             .bind::<Text, _>(&origin)

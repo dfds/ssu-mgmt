@@ -31,7 +31,7 @@ async fn refresh(pool: &DbPool) {
         let mut conn = pool.get().map_err(|e| {
             diesel::result::Error::QueryBuilderError(Box::new(std::io::Error::other(e.to_string())))
         })?;
-        diesel::sql_query("REFRESH MATERIALIZED VIEW CONCURRENTLY event_timeline_daily")
+        diesel::sql_query("REFRESH MATERIALIZED VIEW CONCURRENTLY event_timeline_hourly")
             .execute(&mut conn)?;
         Ok(())
     })

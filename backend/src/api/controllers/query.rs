@@ -187,7 +187,7 @@ async fn query_handler(State(pool): State<DbPool>, Query(params): Query<QueryPar
     let res = tokio::task::spawn_blocking(
         move || -> diesel::QueryResult<(Vec<SsuMgmtEvent>, Option<i64>, bool)> {
             let _g = span.enter();
-            let mut conn = pool.get().unwrap();
+            let mut conn = crate::db::conn(&pool)?;
             let Compiled { where_sql, binds } = compiled;
 
             let mut row_binds = binds.clone();
