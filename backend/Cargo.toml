@@ -61,6 +61,12 @@ native-tls = "^0.2"
 # and is faster under multithreaded allocation. Linux-only; the runtime image is Debian.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "^0.6"
+# Read-side companion to the allocator: exposes jemalloc's own counters
+# (allocated / active / resident / retained / mapped) for the /debug/mem endpoint,
+# so we can tell a real app-side leak (allocated climbing) from allocator retention
+# (resident/retained climbing while allocated is flat). `stats` enables the counters;
+# the `epoch` mib must be advanced before each read to refresh them.
+tikv-jemalloc-ctl = { version = "^0.6", features = ["stats"] }
 
 [build-dependencies]
 vergen = { version = "8.1.3", features = ["build", "git", "gitcl"] }

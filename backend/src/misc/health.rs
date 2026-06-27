@@ -42,7 +42,13 @@ pub fn start_health(
             let mut app = axum::Router::new()
                 .route("/health", axum::routing::get(health))
                 .route("/ready", axum::routing::get(readiness))
-                .route("/live", axum::routing::get(liveness));
+                .route("/live", axum::routing::get(liveness))
+                // Always-on, cheap, read-only memory snapshot on the internal health
+                // server. Poll at ~1s to watch RSS climb in real time (Prometheus is
+                // too coarse) and to separate a real app-side leak (jemalloc
+                // `allocated` rising) from allocator retention (`resident`/`retained`
+                // rising while `allocated` is flat). See `mem_stats`.
+                .route("/debug/mem", axum::routing::get(mem_stats));
 
             if conf.profiling.enable {
                 info!("pprof profiling endpoint enabled at /debug/pprof/profile");
@@ -157,6 +163,88 @@ pub async fn liveness(State(state): State<HealthState>) -> (StatusCode) {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+// ---- /debug/mem : memory snapshot -----------------------------------------
+//
+// Returns process RSS (what the cgroup OOM-killer actually counts) alongside
+// jemalloc's own counters. Cheap and read-only — safe to poll every second:
+//
+//   while :; do curl -s localhost:9001/debug/mem; echo; sleep 1; done
+//
+// Reading the two numbers together is the diagnostic:
+//   - `rss_bytes` is the kernel's view (drives the OOM kill).
+//   - jemalloc `allocated` = bytes the application actually holds. If this
+//     climbs unbounded → a real leak in app data structures.
+//   - `resident`/`retained` climbing while `allocated` is flat → the allocator
+//     is holding freed pages back from the OS (decay/fragmentation), not a leak.
+async fn mem_stats() -> axum::Json<Value> {
+    axum::Json(serde_json::json!({
+        "rss_bytes": proc_rss_bytes(),
+        "rss_peak_bytes": proc_status_field("VmHWM"),
+        "vm_size_bytes": proc_status_field("VmSize"),
+        "jemalloc": jemalloc_stats(),
+    }))
+}
+
+/// Current RSS, read as `VmRSS` from `/proc/self/status`. Linux-only; `None`
+/// elsewhere (e.g. macOS dev). This is the number the cgroup OOM-killer sees.
+fn proc_rss_bytes() -> Option<u64> {
+    proc_status_field("VmRSS")
+}
+
+/// Read a `VmXxx:` field (kB) from `/proc/self/status`, returned as bytes.
+/// Linux-only; `None` elsewhere.
+fn proc_status_field(field: &str) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix(field) {
+                // e.g. "VmRSS:\t  123456 kB"
+                let kb: u64 = rest
+                    .trim_start_matches(':')
+                    .trim()
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()?;
+                return Some(kb * 1024);
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = field;
+        None
+    }
+}
+
+/// jemalloc's internal counters. `epoch::advance()` must be called first to
+/// refresh the cached stats, otherwise every read returns the boot-time values.
+/// `allocated` = live application bytes; `active`/`resident`/`retained`/`mapped`
+/// describe what the allocator holds from the OS.
+fn jemalloc_stats() -> Value {
+    #[cfg(not(target_env = "msvc"))]
+    {
+        use tikv_jemalloc_ctl::{epoch, stats};
+        // Refresh the snapshot; if it fails the reads below just return the stale
+        // (or zero) values — still better than nothing.
+        let _ = epoch::advance();
+        serde_json::json!({
+            "allocated_bytes": stats::allocated::read().ok(),
+            "active_bytes": stats::active::read().ok(),
+            "resident_bytes": stats::resident::read().ok(),
+            "retained_bytes": stats::retained::read().ok(),
+            "mapped_bytes": stats::mapped::read().ok(),
+            "metadata_bytes": stats::metadata::read().ok(),
+        })
+    }
+    #[cfg(target_env = "msvc")]
+    {
+        Value::Null
     }
 }
 
