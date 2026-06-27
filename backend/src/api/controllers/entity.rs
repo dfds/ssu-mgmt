@@ -61,7 +61,8 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
         "db.query",
         otel.kind = "client",
         db.system = "postgresql",
-        op = "entity.bundle"
+        op = "entity.bundle",
+        entity.id = %id
     );
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<serde_json::Value>> {
         let _g = span.enter();
@@ -69,54 +70,81 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
         use crate::schema::grants::dsl as gd;
         use crate::schema::sessions::dsl as sd;
         let mut conn = pool.get()?;
+        
+        let q = |op: &'static str, stmt: &'static str| {
+            tracing::info_span!(
+                "db.query",
+                otel.kind = "client",
+                db.system = "postgresql",
+                op = op,
+                entity.id = %id,
+                db.statement = stmt
+            )
+        };
 
-        let actor: Option<Actor> = ad::actors.find(&id).select(Actor::as_select()).first(&mut conn).optional()?;
+        let actor: Option<Actor> = q("entity.actor", "SELECT * FROM actors WHERE id = $1")
+            .in_scope(|| ad::actors.find(&id).select(Actor::as_select()).first(&mut conn).optional())?;
         let actor = match actor {
             Some(a) => a,
             None => return Ok(None),
         };
 
-        let risk: Option<RiskScore> = {
+        let risk: Option<RiskScore> = q("entity.risk", "SELECT * FROM risk_scores WHERE id = $1").in_scope(|| {
             use crate::schema::risk_scores::dsl as rd;
-            rd::risk_scores.find(&id).select(RiskScore::as_select()).first(&mut conn).optional()?
-        };
+            rd::risk_scores.find(&id).select(RiskScore::as_select()).first(&mut conn).optional()
+        })?;
 
-        let sessions: Vec<Session> = sd::sessions
-            .filter(sd::actor_id.eq(&id))
-            .order(sd::last_seen_at.desc())
-            .limit(25)
-            .select(Session::as_select())
-            .load(&mut conn)?;
+        let sessions: Vec<Session> = q(
+            "entity.sessions",
+            "SELECT * FROM sessions WHERE actor_id = $1 ORDER BY last_seen_at DESC LIMIT 25",
+        )
+        .in_scope(|| {
+            sd::sessions
+                .filter(sd::actor_id.eq(&id))
+                .order(sd::last_seen_at.desc())
+                .limit(25)
+                .select(Session::as_select())
+                .load(&mut conn)
+        })?;
 
-        let grants: Vec<Grant> = gd::grants
-            .filter(gd::actor_id.eq(&id))
-            .order(gd::granted_at.desc().nulls_last())
-            .limit(100)
-            .select(Grant::as_select())
-            .load(&mut conn)?;
+        let grants: Vec<Grant> = q(
+            "entity.grants",
+            "SELECT * FROM grants WHERE actor_id = $1 ORDER BY granted_at DESC NULLS LAST LIMIT 100",
+        )
+        .in_scope(|| {
+            gd::grants
+                .filter(gd::actor_id.eq(&id))
+                .order(gd::granted_at.desc().nulls_last())
+                .limit(100)
+                .select(Grant::as_select())
+                .load(&mut conn)
+        })?;
 
-        let anomalies: Vec<Anomaly> = {
+        let anomalies: Vec<Anomaly> = q(
+            "entity.anomalies",
+            "SELECT * FROM anomalies WHERE actor_id = $1 ORDER BY event_time DESC LIMIT 25",
+        )
+        .in_scope(|| {
             use crate::schema::anomalies::dsl as nd;
             nd::anomalies
                 .filter(nd::actor_id.eq(&id))
                 .order(nd::event_time.desc())
                 .limit(25)
                 .select(Anomaly::as_select())
-                .load(&mut conn)?
-        };
-        
-        let activity: Vec<SsuMgmtEvent> = diesel::sql_query(
-            "SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
+                .load(&mut conn)
+        })?;
+
+        let activity_sql = "SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
              FROM actor_aliases aa CROSS JOIN LATERAL ( \
                  SELECT e.source, e.uid, e.ts, e.actor, e.action, e.resource, e.source_ip, e.level, e.status, e.raw, e.role, e.identity_source, e.account_id, e.caller_account_id \
                  FROM ssumgmt_events e WHERE e.actor = aa.alias ORDER BY e.ts DESC LIMIT 50 \
              ) e \
-             WHERE aa.actor_id = $1 ORDER BY e.ts DESC LIMIT 50",
-        )
-        .bind::<Text, _>(&id)
-        .load(&mut conn)?;
+             WHERE aa.actor_id = $1 ORDER BY e.ts DESC LIMIT 50";
+        let activity: Vec<SsuMgmtEvent> = q("entity.activity", activity_sql).in_scope(|| {
+            diesel::sql_query(activity_sql).bind::<Text, _>(&id).load(&mut conn)
+        })?;
 
-        let stats: StatsRow = diesel::sql_query(
+        let stats_sql =
             "SELECT \
                (SELECT COALESCE(sum(h.cnt), 0) FROM actor_daily_counts dc \
                   JOIN actor_aliases aa ON aa.alias = dc.actor \
@@ -134,12 +162,11 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
                (SELECT count(*) FROM grants WHERE actor_id = $1 AND privileged AND revoked_at IS NULL) AS priv_grants, \
                (SELECT COALESCE(sum(dc.n), 0) FROM actor_daily_counts dc \
                   JOIN actor_aliases aa ON aa.alias = dc.actor \
-                  WHERE aa.actor_id = $1)::bigint AS activity_total",
-        )
-        .bind::<Text, _>(&id)
-        .get_result(&mut conn)?;
+                  WHERE aa.actor_id = $1)::bigint AS activity_total";
+        let stats: StatsRow = q("entity.stats", stats_sql)
+            .in_scope(|| diesel::sql_query(stats_sql).bind::<Text, _>(&id).get_result(&mut conn))?;
 
-        let ctx_rows: Vec<IdentityContextRow> = diesel::sql_query(
+        let ctx_sql =
             "SELECT DISTINCT s.identity_source AS identity_source, s.assumed_role_arn AS assumed_role_arn \
              FROM actor_aliases aa CROSS JOIN LATERAL ( \
                  SELECT c.identity_source, c.assumed_role_arn \
@@ -148,10 +175,9 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
                    AND (c.identity_source IS NOT NULL OR c.assumed_role_arn IS NOT NULL) \
                  ORDER BY c.event_time DESC LIMIT 5000 \
              ) s \
-             WHERE aa.actor_id = $1 LIMIT 200",
-        )
-        .bind::<Text, _>(&id)
-        .load(&mut conn)?;
+             WHERE aa.actor_id = $1 LIMIT 200";
+        let ctx_rows: Vec<IdentityContextRow> = q("entity.identity_context", ctx_sql)
+            .in_scope(|| diesel::sql_query(ctx_sql).bind::<Text, _>(&id).load(&mut conn))?;
         let mut id_sources: Vec<String> = Vec::new();
         let mut assumed_roles: Vec<String> = Vec::new();
         for r in &ctx_rows {
@@ -228,6 +254,7 @@ async fn activity_handler(
         otel.kind = "client",
         db.system = "postgresql",
         op = "entity.activity",
+        entity.id = %id,
         db.statement = tracing::field::Empty
     );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<serde_json::Value> {
