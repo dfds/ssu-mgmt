@@ -60,7 +60,11 @@ native-tls = "^0.2"
 # RSS climbs until the OOM-killer fires. jemalloc returns freed memory to the OS (decay)
 # and is faster under multithreaded allocation. Linux-only; the runtime image is Debian.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "^0.6"
+# `profiling` builds jemalloc with `--enable-prof` so the sampling heap profiler is
+# available (allocation call-stack attribution via the `/debug/heap` dump endpoint +
+# `jeprof`). It's ~zero overhead until activated at runtime with
+# `_RJEM_MALLOC_CONF=...,prof:true,prof_active:true`; off by default.
+tikv-jemallocator = { version = "^0.6", features = ["profiling"] }
 # Read-side companion to the allocator: exposes jemalloc's own counters
 # (allocated / active / resident / retained / mapped) for the /debug/mem endpoint,
 # so we can tell a real app-side leak (allocated climbing) from allocator retention

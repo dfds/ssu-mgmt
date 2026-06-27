@@ -53,6 +53,8 @@ pub fn start_health(
             if conf.profiling.enable {
                 info!("pprof profiling endpoint enabled at /debug/pprof/profile");
                 app = app.merge(pprof_routes(conf.profiling.clone()));
+                info!("jemalloc heap-dump endpoint enabled at /debug/heap (needs _RJEM_MALLOC_CONF=...,prof:true,prof_active:true)");
+                app = app.route("/debug/heap", axum::routing::get(heap_dump));
             }
 
             let app = app
@@ -220,6 +222,83 @@ fn proc_status_field(field: &str) -> Option<u64> {
         let _ = field;
         None
     }
+}
+
+// ---- /debug/heap : jemalloc heap-profile dump -----------------------------
+//
+// Aggregate counters (/debug/mem) tell you *how much* memory is held and whether
+// it's a leak vs fragmentation; this tells you *where it was allocated* — the
+// call stacks responsible, sampled and aggregated by live bytes.
+//
+// Requires the binary built with the jemalloc `profiling` feature (it is) AND
+// profiling activated at runtime:
+//   _RJEM_MALLOC_CONF=background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000,prof:true,prof_active:true,lg_prof_sample:19
+// (`lg_prof_sample:19` ≈ sample every 512 KiB — cheap; lower for finer detail.)
+//
+// Then, while the suspect work runs (e.g. a CloudTrail sweep):
+//   curl -s localhost:9001/debug/heap -o heap.dump
+//   jeprof --text  ./ssu_mgmt heap.dump        # top allocation sites by live bytes
+//   jeprof --collapsed ./ssu_mgmt heap.dump | flamegraph.pl > heap.svg
+// Take two dumps a minute apart and `jeprof --base=first.dump ./ssu_mgmt second.dump`
+// to see exactly what *grew* — that's the leak/growth attribution, no guessing.
+async fn heap_dump() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    #[cfg(not(target_env = "msvc"))]
+    {
+        match dump_heap_profile() {
+            Ok(bytes) => (
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        "attachment; filename=\"ssu-mgmt.heap\"",
+                    ),
+                ],
+                bytes,
+            )
+                .into_response(),
+            Err(msg) => (StatusCode::SERVICE_UNAVAILABLE, format!("{msg}\n")).into_response(),
+        }
+    }
+    #[cfg(target_env = "msvc")]
+    {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            "heap profiling unavailable on this target\n",
+        )
+            .into_response()
+    }
+}
+
+/// Trigger a jemalloc heap-profile dump to a temp file, read it back, and return
+/// the bytes. Returns a human-readable error if profiling wasn't enabled at
+/// runtime (`prof:true` missing from `_RJEM_MALLOC_CONF`).
+#[cfg(not(target_env = "msvc"))]
+fn dump_heap_profile() -> Result<Vec<u8>, String> {
+    use tikv_jemalloc_ctl::raw;
+
+    // Was the profiler compiled in *and* enabled via opt.prof? If not, `prof.dump`
+    // would fail with a cryptic errno — surface the real reason instead.
+    let prof_on = unsafe { raw::read::<bool>(b"opt.prof\0") }.unwrap_or(false);
+    if !prof_on {
+        return Err("jemalloc profiling not enabled — set _RJEM_MALLOC_CONF=...,prof:true,prof_active:true and restart".to_string());
+    }
+    // Make sure sampling is active (in case prof_active:false was configured); a
+    // best-effort toggle — ignore the error if the mallctl is unavailable.
+    let _ = unsafe { raw::write::<bool>(b"prof.active\0", true) };
+
+    // Unique temp path; pid keeps concurrent pods from colliding on a shared mount.
+    let path = std::env::temp_dir().join(format!("ssu-mgmt-{}.heap", std::process::id()));
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|e| format!("temp path encode: {e}"))?;
+
+    // `prof.dump` takes a `const char *` filename and writes the profile there.
+    unsafe { raw::write::<*const std::os::raw::c_char>(b"prof.dump\0", c_path.as_ptr()) }
+        .map_err(|e| format!("prof.dump failed: {e}"))?;
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("read dump {path:?}: {e}"))?;
+    let _ = std::fs::remove_file(&path); // best-effort cleanup
+    Ok(bytes)
 }
 
 /// jemalloc's internal counters. `epoch::advance()` must be called first to
