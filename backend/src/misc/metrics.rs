@@ -8,6 +8,6 @@ pub fn setup_metrics() {
     // metrics::gauge!("chasescanner_jobs_active", 0.0);
 }
 
-pub fn metric_name(val : &str) -> String {
+pub fn metric_name(val: &str) -> String {
     format!("ssu_mgmt_{}", val)
 }

@@ -1,6 +1,6 @@
+use crate::misc::config::load_conf;
 use axum::Json;
 use serde::Serialize;
-use crate::misc::config::load_conf;
 
 #[derive(Serialize)]
 pub struct AuthConfig {

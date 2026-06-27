@@ -52,7 +52,9 @@ pub async fn run(cancel: CancellationToken, conf: GithubConfig, pool: DbPool) {
     let interval = std::time::Duration::from_secs(conf.poll_interval_secs.max(30));
     info!(
         "github audit-log ingest starting :: enterprise={} backfill_window_days={} interval={}s",
-        conf.enterprise, conf.backfill_window_days, interval.as_secs()
+        conf.enterprise,
+        conf.backfill_window_days,
+        interval.as_secs()
     );
 
     let mut consecutive_failures: u32 = 0;
@@ -64,7 +66,11 @@ pub async fn run(cancel: CancellationToken, conf: GithubConfig, pool: DbPool) {
             Ok(()) => consecutive_failures = 0,
             Err(e) => {
                 consecutive_failures += 1;
-                log::error!("github audit-log sweep failed (consecutive={}): {:#}", consecutive_failures, e);
+                log::error!(
+                    "github audit-log sweep failed (consecutive={}): {:#}",
+                    consecutive_failures,
+                    e
+                );
                 if consecutive_failures == STALL_WARN_AFTER_SWEEPS {
                     warn!(
                         "github ingest stalled: {} consecutive failed sweeps — console shows 'stalled'; last error: {:#}",
@@ -90,10 +96,20 @@ pub async fn run(cancel: CancellationToken, conf: GithubConfig, pool: DbPool) {
 
 fn build_client(conf: &GithubConfig) -> anyhow::Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
-    headers.insert("X-GitHub-Api-Version", HeaderValue::from_static("2022-11-28"));
-    headers.insert(USER_AGENT, HeaderValue::from_static("ssu-mgmt-audit-ingest"));
-    let mut auth = HeaderValue::from_str(&format!("Bearer {}", conf.audit_pat)).context("auth header")?;
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(
+        "X-GitHub-Api-Version",
+        HeaderValue::from_static("2022-11-28"),
+    );
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("ssu-mgmt-audit-ingest"),
+    );
+    let mut auth =
+        HeaderValue::from_str(&format!("Bearer {}", conf.audit_pat)).context("auth header")?;
     auth.set_sensitive(true);
     headers.insert(AUTHORIZATION, auth);
     reqwest::Client::builder()
@@ -121,7 +137,9 @@ async fn run_once(
         .context("join")??
     };
     let window_floor = Utc::now() - Duration::days(conf.backfill_window_days.max(1));
-    let since = watermark.map(|w| w.max(window_floor)).unwrap_or(window_floor);
+    let since = watermark
+        .map(|w| w.max(window_floor))
+        .unwrap_or(window_floor);
     let since_date = since.format("%Y-%m-%d").to_string();
 
     let base = conf.api_base_url.trim_end_matches('/');
@@ -149,13 +167,18 @@ async fn run_once(
                 Some(r) => r,
                 None => continue,
             };
-            batch_max_event_at = Some(batch_max_event_at.map_or(row.event_time, |x| x.max(row.event_time)));
+            batch_max_event_at =
+                Some(batch_max_event_at.map_or(row.event_time, |x| x.max(row.event_time)));
             batch.push(row);
         }
 
         if page % FLUSH_PAGES == 0 {
-            total_applied += flush(pool, std::mem::take(&mut batch), batch_max_event_at.take()).await?;
-            info!("github audit-log progress :: page={} applied={}", page, total_applied);
+            total_applied +=
+                flush(pool, std::mem::take(&mut batch), batch_max_event_at.take()).await?;
+            info!(
+                "github audit-log progress :: page={} applied={}",
+                page, total_applied
+            );
         }
 
         match next {
@@ -165,7 +188,10 @@ async fn run_once(
     }
 
     total_applied += flush(pool, batch, batch_max_event_at).await?;
-    info!("github audit-log sweep complete :: pages={} events_applied={}", page, total_applied);
+    info!(
+        "github audit-log sweep complete :: pages={} events_applied={}",
+        page, total_applied
+    );
     Ok(())
 }
 
@@ -192,10 +218,18 @@ async fn fetch_page(
         let retryable = status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS;
         if retryable {
             if waits >= RATE_LIMIT_MAX_WAITS {
-                return Err(anyhow!("rate limit still in effect after {} waits (status {})", waits, status));
+                return Err(anyhow!(
+                    "rate limit still in effect after {} waits (status {})",
+                    waits,
+                    status
+                ));
             }
             let sleep = rate_limit_sleep(resp.headers());
-            warn!("github audit-log rate limited, waiting {}s (attempt {})", sleep.as_secs(), waits + 1);
+            warn!(
+                "github audit-log rate limited, waiting {}s (attempt {})",
+                sleep.as_secs(),
+                waits + 1
+            );
             tokio::select! {
                 _ = cancel.cancelled() => return Err(anyhow!("cancelled during rate-limit wait")),
                 _ = tokio::time::sleep(sleep) => {}
@@ -213,10 +247,18 @@ async fn fetch_page(
 /// `retry-after` (seconds) or `x-ratelimit-reset` (unix epoch). Caps at 5 min.
 fn rate_limit_sleep(headers: &HeaderMap) -> std::time::Duration {
     let cap = std::time::Duration::from_secs(300);
-    if let Some(ra) = headers.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()) {
+    if let Some(ra) = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
         return std::time::Duration::from_secs(ra).min(cap);
     }
-    if let Some(reset) = headers.get("x-ratelimit-reset").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<i64>().ok()) {
+    if let Some(reset) = headers
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+    {
         let now = Utc::now().timestamp();
         if reset > now {
             return std::time::Duration::from_secs((reset - now) as u64).min(cap);
@@ -232,7 +274,10 @@ fn parse_next_link(headers: &HeaderMap) -> Option<String> {
         let segs: Vec<&str> = part.split(';').collect();
         if segs.iter().any(|s| s.trim() == "rel=\"next\"") {
             let raw = segs[0].trim();
-            return raw.strip_prefix('<').and_then(|s| s.strip_suffix('>')).map(str::to_string);
+            return raw
+                .strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .map(str::to_string);
         }
     }
     None
@@ -259,8 +304,16 @@ async fn flush(
                     .execute(conn)
                     .context("insert github_audit_events")? as i64;
             }
-            advance_watermark(conn, SOURCE_GITHUB, None, max_event_at, None, objects, applied)
-                .context("advance watermark")?;
+            advance_watermark(
+                conn,
+                SOURCE_GITHUB,
+                None,
+                max_event_at,
+                None,
+                objects,
+                applied,
+            )
+            .context("advance watermark")?;
             Ok(())
         })?;
         Ok(applied)
@@ -278,9 +331,16 @@ pub(crate) fn map_entry(entry: &Value) -> Option<GithubAuditEventInsert> {
     Some(GithubAuditEventInsert {
         document_id,
         event_time,
-        action: entry.get("action").and_then(Value::as_str).unwrap_or("").to_string(),
+        action: entry
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         actor: str_field(entry, "actor"),
-        actor_id: entry.get("actor_id").map(num_or_str).filter(|s| !s.is_empty()),
+        actor_id: entry
+            .get("actor_id")
+            .map(num_or_str)
+            .filter(|s| !s.is_empty()),
         org: str_field(entry, "org"),
         repo: str_field(entry, "repo"),
         source_ip: str_field(entry, "actor_ip"),
@@ -311,11 +371,19 @@ pub(crate) fn entry_time(entry: &Value) -> Option<DateTime<Utc>> {
 }
 
 pub(crate) fn str_field(entry: &Value, key: &str) -> Option<String> {
-    entry.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+    entry
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 pub(crate) fn num_or_str(v: &Value) -> String {
     v.as_str().map(str::to_string).unwrap_or_else(|| {
-        if v.is_number() { v.to_string() } else { String::new() }
+        if v.is_number() {
+            v.to_string()
+        } else {
+            String::new()
+        }
     })
 }

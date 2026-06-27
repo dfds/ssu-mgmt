@@ -53,7 +53,10 @@ pub const SOURCE_SIEM: &str = "siem";
 pub const SOURCE_GUARDDUTY: &str = "guardduty";
 
 /// Read the persisted watermark for a source, if any.
-pub fn get_watermark(conn: &mut PgConnection, source: &str) -> QueryResult<Option<IngestWatermark>> {
+pub fn get_watermark(
+    conn: &mut PgConnection,
+    source: &str,
+) -> QueryResult<Option<IngestWatermark>> {
     use crate::schema::ingest_watermarks::dsl as w;
     w::ingest_watermarks
         .filter(w::source.eq(source))

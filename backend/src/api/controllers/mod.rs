@@ -8,14 +8,12 @@ pub mod progress;
 mod query;
 mod query_ast;
 
-use axum::Router;
 use crate::api::WebSharedState;
+use axum::Router;
 
-pub fn add_controllers(mut router : Router, state : WebSharedState) -> Router {
-    let role_layer = || axum::middleware::from_fn_with_state(
-        "ce.cloudengineer",
-        crate::api::auth::role_check,
-    );
+pub fn add_controllers(mut router: Router, state: WebSharedState) -> Router {
+    let role_layer =
+        || axum::middleware::from_fn_with_state("ce.cloudengineer", crate::api::auth::role_check);
 
     let query_routes = query::routes(state.db_pool.clone()).layer(role_layer());
     router = router.nest("/query", query_routes);

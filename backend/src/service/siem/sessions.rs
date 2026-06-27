@@ -32,7 +32,10 @@ struct SessionCandidate {
 fn device_of(ua: Option<&str>) -> Option<String> {
     let ua = ua?;
     let l = ua.to_lowercase();
-    let label = if l.contains("console.amazonaws") || l.contains("aws internal") || l.contains("signin.amazonaws") {
+    let label = if l.contains("console.amazonaws")
+        || l.contains("aws internal")
+        || l.contains("signin.amazonaws")
+    {
         "AWS Console"
     } else if l.contains("aws-cli") {
         "AWS CLI"

@@ -88,7 +88,12 @@ fn compile_params(params: &QueryParams) -> Result<Compiled, String> {
         clauses.push(format!("ts <= ${}", binds.len()));
     }
 
-    if let Some(ast) = params.ast.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(ast) = params
+        .ast
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let node: Node = serde_json::from_str(ast).map_err(|e| format!("bad ast: {}", e))?;
         clauses.push(query_ast::compile(&node, &mut binds)?);
     }
@@ -171,61 +176,84 @@ async fn query_handler(State(pool): State<DbPool>, Query(params): Query<QueryPar
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="query.search", db.statement = tracing::field::Empty);
-    let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<(Vec<SsuMgmtEvent>, Option<i64>, bool)> {
-        let _g = span.enter();
-        let mut conn = pool.get().unwrap();
-        let Compiled { where_sql, binds } = compiled;
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "query.search",
+        db.statement = tracing::field::Empty
+    );
+    let res = tokio::task::spawn_blocking(
+        move || -> diesel::QueryResult<(Vec<SsuMgmtEvent>, Option<i64>, bool)> {
+            let _g = span.enter();
+            let mut conn = pool.get().unwrap();
+            let Compiled { where_sql, binds } = compiled;
 
-        let mut row_binds = binds.clone();
-        row_binds.push(Bind::BigInt(limit));
-        let limit_idx = row_binds.len();
-        row_binds.push(Bind::BigInt(offset));
-        let offset_idx = row_binds.len();
-        let rows_sql = format!(
-            "SELECT {cols} FROM ssumgmt_events WHERE {where_sql} \
+            let mut row_binds = binds.clone();
+            row_binds.push(Bind::BigInt(limit));
+            let limit_idx = row_binds.len();
+            row_binds.push(Bind::BigInt(offset));
+            let offset_idx = row_binds.len();
+            let rows_sql = format!(
+                "SELECT {cols} FROM ssumgmt_events WHERE {where_sql} \
              ORDER BY {order_sql} LIMIT ${limit_idx} OFFSET ${offset_idx}",
-            cols = SELECT_COLS,
-        );
-        span.record("db.statement", rows_sql.as_str());
-        let rows: Vec<SsuMgmtEvent> =
-            apply_binds(diesel::sql_query(rows_sql).into_boxed::<Pg>(), row_binds).load(&mut conn)?;
-
-        let (total, total_capped) = if skip_count {
-            (None, false)
-        } else if count_cap > 0 {
-            let count_sql = format!(
-                "SELECT count(*)::bigint AS total FROM \
-                 (SELECT 1 FROM ssumgmt_events WHERE {where_sql} LIMIT {cap}) sub",
-                cap = count_cap + 1,
+                cols = SELECT_COLS,
             );
-            let counted: i64 = apply_binds(diesel::sql_query(count_sql).into_boxed::<Pg>(), binds)
-                .get_result::<CountRow>(&mut conn)?
-                .total;
-            if counted > count_cap {
-                (Some(count_cap), true)
-            } else {
-                (Some(counted), false)
-            }
-        } else {
-            let count_sql =
-                format!("SELECT count(*)::bigint AS total FROM ssumgmt_events WHERE {where_sql}");
-            let counted: i64 = apply_binds(diesel::sql_query(count_sql).into_boxed::<Pg>(), binds)
-                .get_result::<CountRow>(&mut conn)?
-                .total;
-            (Some(counted), false)
-        };
+            span.record("db.statement", rows_sql.as_str());
+            let rows: Vec<SsuMgmtEvent> =
+                apply_binds(diesel::sql_query(rows_sql).into_boxed::<Pg>(), row_binds)
+                    .load(&mut conn)?;
 
-        Ok((rows, total, total_capped))
-    })
+            let (total, total_capped) = if skip_count {
+                (None, false)
+            } else if count_cap > 0 {
+                let count_sql = format!(
+                    "SELECT count(*)::bigint AS total FROM \
+                 (SELECT 1 FROM ssumgmt_events WHERE {where_sql} LIMIT {cap}) sub",
+                    cap = count_cap + 1,
+                );
+                let counted: i64 =
+                    apply_binds(diesel::sql_query(count_sql).into_boxed::<Pg>(), binds)
+                        .get_result::<CountRow>(&mut conn)?
+                        .total;
+                if counted > count_cap {
+                    (Some(count_cap), true)
+                } else {
+                    (Some(counted), false)
+                }
+            } else {
+                let count_sql = format!(
+                    "SELECT count(*)::bigint AS total FROM ssumgmt_events WHERE {where_sql}"
+                );
+                let counted: i64 =
+                    apply_binds(diesel::sql_query(count_sql).into_boxed::<Pg>(), binds)
+                        .get_result::<CountRow>(&mut conn)?
+                        .total;
+                (Some(counted), false)
+            };
+
+            Ok((rows, total, total_capped))
+        },
+    )
     .await;
 
     match res {
-        Ok(Ok((rows, total, total_capped))) => {
-            Json(QueryResponse { rows, total, total_capped }).into_response()
-        }
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Ok((rows, total, total_capped))) => Json(QueryResponse {
+            rows,
+            total,
+            total_capped,
+        })
+        .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -239,14 +267,22 @@ async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryPa
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="query.export", db.statement = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "query.export",
+        db.statement = tracing::field::Empty
+    );
     let res = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
         let _g = span.enter();
         let mut conn = pool.get().map_err(|e| e.to_string())?;
         let Compiled { where_sql, binds } = compiled;
 
-        let rows_sql =
-            format!("SELECT {cols} FROM ssumgmt_events WHERE {where_sql} ORDER BY {order_sql}", cols = SELECT_COLS);
+        let rows_sql = format!(
+            "SELECT {cols} FROM ssumgmt_events WHERE {where_sql} ORDER BY {order_sql}",
+            cols = SELECT_COLS
+        );
         span.record("db.statement", rows_sql.as_str());
         let rows: Vec<SsuMgmtEvent> =
             apply_binds(diesel::sql_query(rows_sql).into_boxed::<Pg>(), binds)
@@ -255,8 +291,20 @@ async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryPa
 
         let mut wtr = csv::Writer::from_writer(vec![]);
         wtr.write_record([
-            "source", "uid", "ts", "actor", "action", "resource", "source_ip", "level", "status",
-            "role", "identity_source", "account_id", "caller_account_id", "raw",
+            "source",
+            "uid",
+            "ts",
+            "actor",
+            "action",
+            "resource",
+            "source_ip",
+            "level",
+            "status",
+            "role",
+            "identity_source",
+            "account_id",
+            "caller_account_id",
+            "raw",
         ])
         .map_err(|e| e.to_string())?;
 
@@ -288,7 +336,10 @@ async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryPa
     match res {
         Ok(Ok(bytes)) => {
             let mut headers = HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/csv; charset=utf-8"),
+            );
             headers.insert(
                 header::CONTENT_DISPOSITION,
                 HeaderValue::from_static("attachment; filename=\"ssumgmt_events.csv\""),
@@ -296,6 +347,10 @@ async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryPa
             (StatusCode::OK, headers, bytes).into_response()
         }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

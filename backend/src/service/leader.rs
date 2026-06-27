@@ -98,7 +98,12 @@ fn election_loop(rt: Arc<Runtime>, conf: Config, pool: DbPool, global_cancel: Ca
     }
 }
 
-fn spawn_singleton_workers(rt: &Arc<Runtime>, conf: &Config, pool: &DbPool, cancel: &CancellationToken) {
+fn spawn_singleton_workers(
+    rt: &Arc<Runtime>,
+    conf: &Config,
+    pool: &DbPool,
+    cancel: &CancellationToken,
+) {
     if conf.enable_cloudtrail_ingest {
         info!("CloudTrail ingest enabled");
         rt.spawn(crate::service::ingest::cloudtrail::run(

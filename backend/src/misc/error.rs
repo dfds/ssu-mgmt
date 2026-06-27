@@ -29,7 +29,6 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-
 impl From<config::ConfigError> for Error {
     fn from(value: config::ConfigError) -> Self {
         Self::ConfigError(Box::new(value))

@@ -1,19 +1,23 @@
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Release};
+use crate::api::{api_router, WebState};
+use crate::misc::config::load_conf;
+use crate::misc::services::{Services, ServicesShared};
 use axum::extract::State;
 use axum::http::StatusCode;
 use jwt_authorizer::{Authorizer, JwtAuthorizer, Validation};
 use log::info;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
-use crate::api::{api_router, WebState};
-use crate::misc::config::load_conf;
-use crate::misc::services::{Services, ServicesShared};
 
-pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: ServicesShared, listen_addr : String) {
+pub fn start_health(
+    shutdown: seqtf_bootstrap::shutdown::Shutdown,
+    ss: ServicesShared,
+    listen_addr: String,
+) {
     let hs = ss.read().unwrap().get_service::<HealthState>().unwrap();
 
     let _hs = hs.clone();
@@ -24,10 +28,13 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
         let rt_conf = load_conf().unwrap().runtime;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .thread_name("health_worker")
-            .worker_threads(crate::misc::runtime::worker_threads(rt_conf.health_worker_threads))
+            .worker_threads(crate::misc::runtime::worker_threads(
+                rt_conf.health_worker_threads,
+            ))
             .max_blocking_threads(rt_conf.health_max_blocking_threads)
             .enable_all()
-            .build().expect("Unable to create health server pool");
+            .build()
+            .expect("Unable to create health server pool");
 
         runtime.block_on(async move {
             let conf = load_conf().unwrap();
@@ -36,7 +43,7 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
                 .route("/health", axum::routing::get(health))
                 .route("/ready", axum::routing::get(readiness))
                 .route("/live", axum::routing::get(liveness));
-            
+
             if conf.profiling.enable {
                 info!("pprof profiling endpoint enabled at /debug/pprof/profile");
                 app = app.merge(pprof_routes(conf.profiling.clone()));
@@ -47,8 +54,10 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
                 .layer(axum::middleware::from_fn(crate::api::default_headers));
 
             let listener = TcpListener::bind(listen_addr.as_str()).await.unwrap();
-            axum::serve(listener, app).with_graceful_shutdown(shutdown.exit)
-                .await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.exit)
+                .await
+                .unwrap();
         });
     });
 }
@@ -56,14 +65,14 @@ pub fn start_health(shutdown : seqtf_bootstrap::shutdown::Shutdown, ss: Services
 #[derive(Clone)]
 pub struct HealthState {
     inner: Inner,
-    pub checks : Arc<RwLock<HashMap<String, bool>>>
+    pub checks: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 #[derive(Clone)]
 struct Inner {
-    healthy : Arc<AtomicBool>,
-    ready : Arc<AtomicBool>,
-    live : Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    live: Arc<AtomicBool>,
 }
 
 impl HealthState {
@@ -127,7 +136,7 @@ impl HealthState {
     }
 }
 
-pub async fn health(State(state) : State<HealthState>) -> (StatusCode) {
+pub async fn health(State(state): State<HealthState>) -> (StatusCode) {
     if state.is_healthy() {
         StatusCode::OK
     } else {
@@ -135,7 +144,7 @@ pub async fn health(State(state) : State<HealthState>) -> (StatusCode) {
     }
 }
 
-pub async fn readiness(State(state) : State<HealthState>) -> (StatusCode) {
+pub async fn readiness(State(state): State<HealthState>) -> (StatusCode) {
     if state.is_ready() {
         StatusCode::OK
     } else {
@@ -143,7 +152,7 @@ pub async fn readiness(State(state) : State<HealthState>) -> (StatusCode) {
     }
 }
 
-pub async fn liveness(State(state) : State<HealthState>) -> (StatusCode) {
+pub async fn liveness(State(state): State<HealthState>) -> (StatusCode) {
     if state.is_live() {
         StatusCode::OK
     } else {
@@ -159,9 +168,9 @@ pub async fn liveness(State(state) : State<HealthState>) -> (StatusCode) {
 // SIGPROF — only one profiler can run process-wide, so a second concurrent
 // request is rejected with 409.
 
-use serde::Deserialize;
 use axum::extract::Query;
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 
 /// One profiler may run at a time (SIGPROF is process-global). Acquired in the
 /// handler, released inside the blocking task so it tracks the profiler's real
@@ -212,7 +221,10 @@ async fn pprof_profile(
             .into_response();
     }
 
-    let seconds = p.seconds.unwrap_or(cfg.default_seconds).clamp(1, cfg.max_seconds.max(1));
+    let seconds = p
+        .seconds
+        .unwrap_or(cfg.default_seconds)
+        .clamp(1, cfg.max_seconds.max(1));
     let hz = p.hz.unwrap_or(cfg.default_hz).clamp(1, 1000);
     let format = p.format.unwrap_or_else(|| "svg".to_owned());
 
@@ -245,7 +257,9 @@ async fn pprof_profile(
         match format.as_str() {
             "pb" | "proto" | "pprof" => {
                 use pprof::protos::Message;
-                let profile = report.pprof().map_err(|e| format!("pprof encode failed: {e}"))?;
+                let profile = report
+                    .pprof()
+                    .map_err(|e| format!("pprof encode failed: {e}"))?;
                 let bytes = profile
                     .write_to_bytes()
                     .map_err(|e| format!("protobuf serialize failed: {e}"))?;
@@ -263,11 +277,9 @@ async fn pprof_profile(
     .await;
 
     match result {
-        Ok(Ok((bytes, content_type))) => (
-            [(axum::http::header::CONTENT_TYPE, content_type)],
-            bytes,
-        )
-            .into_response(),
+        Ok(Ok((bytes, content_type))) => {
+            ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
         Ok(Err(msg)) => {
             // The blocking task ran (so the ActiveGuard already reset the flag).
             (StatusCode::INTERNAL_SERVER_ERROR, format!("{msg}\n")).into_response()

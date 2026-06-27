@@ -154,7 +154,12 @@ pub fn compile(node: &Node, binds: &mut Vec<Bind>) -> Result<String, String> {
     }
 }
 
-fn compile_field(field: Field, op: Op, value: &str, binds: &mut Vec<Bind>) -> Result<String, String> {
+fn compile_field(
+    field: Field,
+    op: Op,
+    value: &str,
+    binds: &mut Vec<Bind>,
+) -> Result<String, String> {
     let col = field.column();
     match op {
         Op::Eq => {
@@ -171,9 +176,17 @@ fn compile_field(field: Field, op: Op, value: &str, binds: &mut Vec<Bind>) -> Re
         }
         Op::NotContains => {
             binds.push(Bind::Text(format!("%{}%", value)));
-            Ok(format!("({} IS NULL OR {} NOT ILIKE ${})", col, col, binds.len()))
+            Ok(format!(
+                "({} IS NULL OR {} NOT ILIKE ${})",
+                col,
+                col,
+                binds.len()
+            ))
         }
-        _ => Err(format!("comparison operators are not allowed on field `{}`", col)),
+        _ => Err(format!(
+            "comparison operators are not allowed on field `{}`",
+            col
+        )),
     }
 }
 
@@ -204,7 +217,11 @@ fn compile_jsonpath(
             }
             Op::Ne => {
                 binds.push(Bind::Text(value.to_owned()));
-                Ok(format!("(raw #>> ${}) IS DISTINCT FROM ${}", p, binds.len()))
+                Ok(format!(
+                    "(raw #>> ${}) IS DISTINCT FROM ${}",
+                    p,
+                    binds.len()
+                ))
             }
             Op::Contains => {
                 binds.push(Bind::Text(format!("%{}%", value)));

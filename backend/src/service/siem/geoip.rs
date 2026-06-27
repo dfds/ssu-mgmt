@@ -28,10 +28,15 @@ impl GeoIp {
         match Reader::open_readfile(db_path) {
             Ok(r) => {
                 info!("geoip: loaded GeoLite2 db from {}", db_path);
-                Self { reader: Some(Arc::new(r)) }
+                Self {
+                    reader: Some(Arc::new(r)),
+                }
             }
             Err(e) => {
-                warn!("geoip: failed to open {}: {} — session location disabled", db_path, e);
+                warn!(
+                    "geoip: failed to open {}: {} — session location disabled",
+                    db_path, e
+                );
                 Self::default()
             }
         }

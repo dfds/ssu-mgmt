@@ -51,7 +51,12 @@ pub async fn run(cancel: CancellationToken, conf: Config, pool: DbPool) {
 
 /// One full derivation pass.
 #[tracing::instrument(name = "siem.pass", skip_all, fields(window_days = conf.siem.window_days))]
-async fn run_pass(cancel: &CancellationToken, conf: &Config, pool: &DbPool, geoip: &GeoIp) -> anyhow::Result<()> {
+async fn run_pass(
+    cancel: &CancellationToken,
+    conf: &Config,
+    pool: &DbPool,
+    geoip: &GeoIp,
+) -> anyhow::Result<()> {
     let roster = actors::fetch_roster(&conf.selfservice).await;
 
     let pool = pool.clone();

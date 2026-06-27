@@ -13,7 +13,9 @@ use tracing::Instrument;
 
 use crate::db::DbPool;
 use crate::misc::config::GuarddutyConfig;
-use crate::service::ingest::{advance_watermark, get_watermark, record_run_error, SOURCE_GUARDDUTY};
+use crate::service::ingest::{
+    advance_watermark, get_watermark, record_run_error, SOURCE_GUARDDUTY,
+};
 
 /// Entry point: initial sweep then poll on the configured interval.
 pub async fn run(cancel: CancellationToken, conf: GuarddutyConfig, pool: DbPool) {
@@ -34,7 +36,11 @@ pub async fn run(cancel: CancellationToken, conf: GuarddutyConfig, pool: DbPool)
         "guardduty ingest starting :: regions={:?} interval={}s assume_role={}",
         regions,
         interval.as_secs(),
-        if conf.assume_role_arn.is_empty() { "none" } else { conf.assume_role_arn.as_str() }
+        if conf.assume_role_arn.is_empty() {
+            "none"
+        } else {
+            conf.assume_role_arn.as_str()
+        }
     );
 
     loop {
@@ -72,7 +78,11 @@ async fn load_aws_config(conf: &GuarddutyConfig, region: &str) -> aws_config::Sd
 }
 
 #[tracing::instrument(name = "guardduty.sweep", skip_all, fields(n_regions = regions.len()))]
-async fn run_once(shared: &aws_config::SdkConfig, regions: &[String], pool: &DbPool) -> anyhow::Result<()> {
+async fn run_once(
+    shared: &aws_config::SdkConfig,
+    regions: &[String],
+    pool: &DbPool,
+) -> anyhow::Result<()> {
     let since = {
         let pool = pool.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<Option<DateTime<Utc>>> {
@@ -98,11 +108,16 @@ async fn run_once(shared: &aws_config::SdkConfig, regions: &[String], pool: &DbP
                 .build();
             let client = Client::from_conf(conf);
 
-            let detectors = client.list_detectors().send().await.with_context(|| format!("list detectors {}", region))?;
+            let detectors = client
+                .list_detectors()
+                .send()
+                .await
+                .with_context(|| format!("list detectors {}", region))?;
             let mut region_total = 0usize;
             let mut region_latest: Option<DateTime<Utc>> = None;
             for detector_id in detectors.detector_ids() {
-                let (applied, latest) = sweep_detector(&client, detector_id, region, since, pool).await?;
+                let (applied, latest) =
+                    sweep_detector(&client, detector_id, region, since, pool).await?;
                 region_total += applied;
                 region_latest = max_opt(region_latest, latest);
             }
@@ -120,7 +135,8 @@ async fn run_once(shared: &aws_config::SdkConfig, regions: &[String], pool: &DbP
         let applied = total as i64;
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             let mut conn = pool.get().context("pool get")?;
-            advance_watermark(&mut conn, SOURCE_GUARDDUTY, None, last, None, 0, applied).context("advance watermark")
+            advance_watermark(&mut conn, SOURCE_GUARDDUTY, None, last, None, 0, applied)
+                .context("advance watermark")
         })
         .await
         .context("join")??;
@@ -147,12 +163,17 @@ async fn sweep_detector(
     pool: &DbPool,
 ) -> anyhow::Result<(usize, Option<DateTime<Utc>>)> {
     let criteria = since.map(|s| {
-        let cond = Condition::builder().greater_than_or_equal(s.timestamp_millis()).build();
+        let cond = Condition::builder()
+            .greater_than_or_equal(s.timestamp_millis())
+            .build();
         let mut crit: HashMap<String, Condition> = HashMap::new();
         crit.insert("updatedAt".to_string(), cond);
         FindingCriteria::builder().set_criterion(Some(crit)).build()
     });
-    let sort = SortCriteria::builder().attribute_name("updatedAt").order_by(OrderBy::Asc).build();
+    let sort = SortCriteria::builder()
+        .attribute_name("updatedAt")
+        .order_by(OrderBy::Asc)
+        .build();
 
     // ListFindings returns at most 50 finding IDs per page; paginate via the
     // continuation token to collect them all.
@@ -302,7 +323,10 @@ fn severity_label(s: f64) -> &'static str {
 /// Resolve a finding's first/last seen from `service.event_first_seen/last_seen`
 /// (ISO8601 strings), falling back to created/updated, then now.
 fn finding_window(f: &aws_sdk_guardduty::types::Finding) -> (DateTime<Utc>, DateTime<Utc>) {
-    let parse = |s: Option<&str>| s.and_then(|x| DateTime::parse_from_rfc3339(x).ok()).map(|d| d.with_timezone(&Utc));
+    let parse = |s: Option<&str>| {
+        s.and_then(|x| DateTime::parse_from_rfc3339(x).ok())
+            .map(|d| d.with_timezone(&Utc))
+    };
     let svc = f.service();
     let first = parse(svc.and_then(|s| s.event_first_seen()))
         .or_else(|| parse(f.created_at()))

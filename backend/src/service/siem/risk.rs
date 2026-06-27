@@ -37,7 +37,11 @@ fn label_of(score: i32) -> &'static str {
 }
 
 /// Recompute and store every actor's risk score. Returns the number of actors scored.
-pub fn compute(conn: &mut PgConnection, risk: &RiskConfig, siem: &SiemConfig) -> anyhow::Result<usize> {
+pub fn compute(
+    conn: &mut PgConnection,
+    risk: &RiskConfig,
+    siem: &SiemConfig,
+) -> anyhow::Result<usize> {
     let now = Utc::now();
     let window_floor = now - Duration::days(siem.window_days.max(1));
     let h24 = now - Duration::hours(24);

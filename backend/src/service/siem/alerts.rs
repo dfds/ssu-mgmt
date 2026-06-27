@@ -6,7 +6,10 @@ use diesel::PgConnection;
 
 /// Run every detection rule + post-processing (session flagging, auto-resolve).
 /// Returns the number of alert rows inserted/updated by the rules.
-pub fn evaluate(conn: &mut PgConnection, siem: &crate::misc::config::SiemConfig) -> anyhow::Result<usize> {
+pub fn evaluate(
+    conn: &mut PgConnection,
+    siem: &crate::misc::config::SiemConfig,
+) -> anyhow::Result<usize> {
     let now = Utc::now();
     let window_floor = now - Duration::days(siem.window_days.max(1));
     let h24 = now - Duration::hours(24);

@@ -71,7 +71,10 @@ struct ActorsPage {
     total: i64,
 }
 
-async fn actors_handler(State(pool): State<DbPool>, Query(params): Query<ActorsParams>) -> Response {
+async fn actors_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<ActorsParams>,
+) -> Response {
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = params.offset.unwrap_or(0).max(0);
     let kind = params.kind.unwrap_or_default();
@@ -123,7 +126,15 @@ async fn actors_handler(State(pool): State<DbPool>, Query(params): Query<ActorsP
 
     match res {
         Ok(Ok(page)) => Json(page).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

@@ -25,20 +25,60 @@ pub fn routes(pool: DbPool) -> Router {
         .with_state(pool)
 }
 
-async fn ack_handler(State(pool): State<DbPool>, claims: Option<Extension<Value>>, Path(id): Path<i64>) -> Response {
-    triage(pool, id, principal_of(claims.as_ref().map(|e| &e.0)), Action::Ack).await
+async fn ack_handler(
+    State(pool): State<DbPool>,
+    claims: Option<Extension<Value>>,
+    Path(id): Path<i64>,
+) -> Response {
+    triage(
+        pool,
+        id,
+        principal_of(claims.as_ref().map(|e| &e.0)),
+        Action::Ack,
+    )
+    .await
 }
 
-async fn resolve_handler(State(pool): State<DbPool>, claims: Option<Extension<Value>>, Path(id): Path<i64>) -> Response {
-    triage(pool, id, principal_of(claims.as_ref().map(|e| &e.0)), Action::Resolve).await
+async fn resolve_handler(
+    State(pool): State<DbPool>,
+    claims: Option<Extension<Value>>,
+    Path(id): Path<i64>,
+) -> Response {
+    triage(
+        pool,
+        id,
+        principal_of(claims.as_ref().map(|e| &e.0)),
+        Action::Resolve,
+    )
+    .await
 }
 
-async fn unack_handler(State(pool): State<DbPool>, claims: Option<Extension<Value>>, Path(id): Path<i64>) -> Response {
-    triage(pool, id, principal_of(claims.as_ref().map(|e| &e.0)), Action::Unack).await
+async fn unack_handler(
+    State(pool): State<DbPool>,
+    claims: Option<Extension<Value>>,
+    Path(id): Path<i64>,
+) -> Response {
+    triage(
+        pool,
+        id,
+        principal_of(claims.as_ref().map(|e| &e.0)),
+        Action::Unack,
+    )
+    .await
 }
 
-async fn unresolve_handler(State(pool): State<DbPool>, claims: Option<Extension<Value>>, Path(id): Path<i64>) -> Response {
-    triage(pool, id, principal_of(claims.as_ref().map(|e| &e.0)), Action::Unresolve).await
+async fn unresolve_handler(
+    State(pool): State<DbPool>,
+    claims: Option<Extension<Value>>,
+    Path(id): Path<i64>,
+) -> Response {
+    triage(
+        pool,
+        id,
+        principal_of(claims.as_ref().map(|e| &e.0)),
+        Action::Unresolve,
+    )
+    .await
 }
 
 async fn triage(pool: DbPool, id: i64, who: String, action: Action) -> Response {
@@ -63,7 +103,15 @@ async fn triage(pool: DbPool, id: i64, who: String, action: Action) -> Response 
     match res {
         Ok(Ok(0)) => (StatusCode::NOT_FOUND, not_applicable).into_response(),
         Ok(Ok(_)) => Json(json!({ "ok": true })).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

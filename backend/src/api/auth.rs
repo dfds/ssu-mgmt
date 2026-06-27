@@ -1,10 +1,10 @@
+use crate::api::WebSharedState;
 use axum::body::Body;
 use axum::extract::{OriginalUri, State};
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
-use crate::api::WebSharedState;
 use tower_layer::Layer;
 
 /// Resolve the acting principal from AAD-style claims (inserted by `auth_oauth`),
@@ -16,7 +16,14 @@ pub fn principal_of(claims: Option<&Value>) -> String {
         Some(c) => c,
         None => return "unknown".to_string(),
     };
-    for key in ["preferred_username", "upn", "email", "unique_name", "oid", "sub"] {
+    for key in [
+        "preferred_username",
+        "upn",
+        "email",
+        "unique_name",
+        "oid",
+        "sub",
+    ] {
         if let Some(s) = c.get(key).and_then(Value::as_str) {
             if !s.is_empty() {
                 return s.to_string();
@@ -26,7 +33,12 @@ pub fn principal_of(claims: Option<&Value>) -> String {
     "unknown".to_string()
 }
 
-pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): OriginalUri, mut request: Request<Body>, next: Next) -> Response {
+pub async fn auth_oauth(
+    State(state): State<WebSharedState>,
+    OriginalUri(uri): OriginalUri,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
     // Public bypass: OIDC bootstrap endpoint must be reachable without a token.
     if uri.path() == "/api/auth/config" {
         return next.run(request).await;
@@ -50,7 +62,13 @@ pub async fn auth_oauth(State(state) : State<WebSharedState>, OriginalUri(uri): 
         _ => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let auth_svc = state.jwt_validator.layer(Value::default()).auths.first().unwrap().clone();
+    let auth_svc = state
+        .jwt_validator
+        .layer(Value::default())
+        .auths
+        .first()
+        .unwrap()
+        .clone();
     let valid = auth_svc.check_auth(&token).await;
 
     match valid {

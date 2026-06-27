@@ -20,7 +20,10 @@ pub fn routes(pool: DbPool) -> Router {
         .route("/alerts", axum::routing::get(alerts_handler))
         .route("/anomalies", axum::routing::get(anomalies_handler))
         .route("/sources", axum::routing::get(sources_handler))
-        .route("/actors-by-risk", axum::routing::get(actors_by_risk_handler))
+        .route(
+            "/actors-by-risk",
+            axum::routing::get(actors_by_risk_handler),
+        )
         .with_state(pool)
 }
 
@@ -92,7 +95,12 @@ pub(crate) fn load_kpis(conn: &mut PgConnection) -> anyhow::Result<serde_json::V
 /// ingester has actually run cleanly — never a fabricated zero. `anomalies/24h`
 /// is now live.
 async fn kpis_handler(State(pool): State<DbPool>) -> Response {
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.kpis");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.kpis"
+    );
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let _g = span.enter();
         let mut conn = pool.get()?;
@@ -102,8 +110,16 @@ async fn kpis_handler(State(pool): State<DbPool>) -> Response {
 
     match res {
         Ok(Ok(payload)) => Json(payload).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -133,7 +149,10 @@ pub struct AlertsResponse {
 
 /// Load the most recent alerts (newest by `last_seen`), unfiltered. Shared by the
 /// WebSocket progress push; the HTTP handler adds optional severity/status facets.
-pub(crate) fn load_overview_alerts(conn: &mut PgConnection, limit: i64) -> diesel::QueryResult<Vec<Alert>> {
+pub(crate) fn load_overview_alerts(
+    conn: &mut PgConnection,
+    limit: i64,
+) -> diesel::QueryResult<Vec<Alert>> {
     use crate::schema::alerts::dsl as a;
     a::alerts
         .order(a::last_seen.desc())
@@ -142,11 +161,19 @@ pub(crate) fn load_overview_alerts(conn: &mut PgConnection, limit: i64) -> diese
         .load(conn)
 }
 
-async fn alerts_handler(State(pool): State<DbPool>, Query(params): Query<AlertsParams>) -> Response {
+async fn alerts_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<AlertsParams>,
+) -> Response {
     use crate::schema::alerts::dsl as a;
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
     let offset = params.offset.unwrap_or(0).max(0);
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.alerts");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.alerts"
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<AlertsResponse> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -182,8 +209,16 @@ async fn alerts_handler(State(pool): State<DbPool>, Query(params): Query<AlertsP
 
     match res {
         Ok(Ok(resp)) => Json(resp).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -200,7 +235,10 @@ pub struct AnomaliesParams {
 /// Anomalies in a window, newest first. Backs both the overview anomaly feed and
 /// the timeline markers (each row carries `event_time` for x-positioning).
 /// Defaults to the trailing 24h when no `from` is given.
-async fn anomalies_handler(State(pool): State<DbPool>, Query(params): Query<AnomaliesParams>) -> Response {
+async fn anomalies_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<AnomaliesParams>,
+) -> Response {
     use crate::schema::anomalies::dsl as an;
     let limit = params.limit.unwrap_or(200).clamp(1, 1000);
     let from = match params.from.as_deref().map(parse_ts).transpose() {
@@ -211,7 +249,12 @@ async fn anomalies_handler(State(pool): State<DbPool>, Query(params): Query<Anom
         Ok(v) => v.unwrap_or_else(Utc::now),
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.anomalies");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.anomalies"
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<Anomaly>> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -231,8 +274,16 @@ async fn anomalies_handler(State(pool): State<DbPool>, Query(params): Query<Anom
 
     match res {
         Ok(Ok(rows)) => Json(rows).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -251,7 +302,13 @@ struct SourceRow {
 /// Per-source event volume + failure count over the trailing 7 days, backing the
 /// overview "sources breakdown + fail rate" panel.
 async fn sources_handler(State(pool): State<DbPool>) -> Response {
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.sources", db.statement = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.sources",
+        db.statement = tracing::field::Empty
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<SourceRow>> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -267,8 +324,16 @@ async fn sources_handler(State(pool): State<DbPool>) -> Response {
 
     match res {
         Ok(Ok(rows)) => Json(rows).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -303,9 +368,18 @@ struct ActorRiskRow {
     last_active: Option<DateTime<Utc>>,
 }
 
-async fn actors_by_risk_handler(State(pool): State<DbPool>, Query(params): Query<ActorsByRiskParams>) -> Response {
+async fn actors_by_risk_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<ActorsByRiskParams>,
+) -> Response {
     let limit = params.limit.unwrap_or(10).clamp(1, 100);
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.actors_by_risk", db.statement = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.actors_by_risk",
+        db.statement = tracing::field::Empty
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<ActorRiskRow>> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -321,14 +395,24 @@ async fn actors_by_risk_handler(State(pool): State<DbPool>, Query(params): Query
 
     match res {
         Ok(Ok(rows)) => Json(rows).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
 /// Load every source's ingest-health row, ordered by source. Shared by the
 /// WebSocket progress push.
-pub(crate) fn load_ingest_health(conn: &mut PgConnection) -> diesel::QueryResult<Vec<IngestHealth>> {
+pub(crate) fn load_ingest_health(
+    conn: &mut PgConnection,
+) -> diesel::QueryResult<Vec<IngestHealth>> {
     use crate::schema::ingest_watermarks::dsl as w;
     w::ingest_watermarks
         .order(w::source.asc())
@@ -339,7 +423,12 @@ pub(crate) fn load_ingest_health(conn: &mut PgConnection) -> diesel::QueryResult
 /// Per-source ingest-health — the `ingest_watermarks` rows, surfaced in the
 /// console header as freshness/stall indicators.
 async fn ingest_health_handler(State(pool): State<DbPool>) -> Response {
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="overview.ingest_health");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "overview.ingest_health"
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<IngestHealth>> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -349,8 +438,16 @@ async fn ingest_health_handler(State(pool): State<DbPool>) -> Response {
 
     match res {
         Ok(Ok(rows)) => Json(rows).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -390,12 +487,21 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|e| format!("invalid timestamp {}: {}", s, e))
 }
 
-async fn timeline_handler(State(pool): State<DbPool>, Query(params): Query<TimelineParams>) -> Response {
+async fn timeline_handler(
+    State(pool): State<DbPool>,
+    Query(params): Query<TimelineParams>,
+) -> Response {
     // Allowlist the bucket granularity — it is interpolated into date_trunc, so
     // it must never be attacker-controlled free text.
     let bucket = match params.bucket.as_deref().unwrap_or("hour") {
         b @ ("minute" | "hour" | "day") => b.to_owned(),
-        other => return (StatusCode::BAD_REQUEST, format!("invalid bucket: {}", other)).into_response(),
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid bucket: {}", other),
+            )
+                .into_response()
+        }
     };
 
     let now = Utc::now();
@@ -427,9 +533,9 @@ async fn timeline_handler(State(pool): State<DbPool>, Query(params): Query<Timel
                  ORDER BY bucket ASC";
             span.record("db.statement", day_sql);
             diesel::sql_query(day_sql)
-            .bind::<Timestamptz, _>(from)
-            .bind::<Timestamptz, _>(to)
-            .load::<TimelineRow>(&mut conn)
+                .bind::<Timestamptz, _>(from)
+                .bind::<Timestamptz, _>(to)
+                .load::<TimelineRow>(&mut conn)
         } else {
             // minute/hour buckets serve short windows (24h/7d) — cheap enough to
             // count live, and finer than the daily rollup can express.
@@ -440,17 +546,31 @@ async fn timeline_handler(State(pool): State<DbPool>, Query(params): Query<Timel
                  ORDER BY 1 ASC";
             span.record("db.statement", fine_sql);
             diesel::sql_query(fine_sql)
-            .bind::<Text, _>(bucket_for_query)
-            .bind::<Timestamptz, _>(from)
-            .bind::<Timestamptz, _>(to)
-            .load::<TimelineRow>(&mut conn)
+                .bind::<Text, _>(bucket_for_query)
+                .bind::<Timestamptz, _>(from)
+                .bind::<Timestamptz, _>(to)
+                .load::<TimelineRow>(&mut conn)
         }
     })
     .await;
 
     match res {
-        Ok(Ok(rows)) => Json(TimelineResponse { bucket, from, to, rows }).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Ok(rows)) => Json(TimelineResponse {
+            bucket,
+            from,
+            to,
+            rows,
+        })
+        .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

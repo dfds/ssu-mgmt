@@ -1,33 +1,40 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use crate::messaging::model::{Context, Envelope};
 use crate::messaging::offset_tracker::OffsetTracker;
 use crate::misc::error::SsuResult;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct Registry {
-    handlers : HashMap<String, Handler>
+    handlers: HashMap<String, Handler>,
 }
 
 impl Registry {
-    pub fn register<F : Fn(Context) -> SsuResult<()> +'static + Send + Sync>(&mut self, event_name : String, handler : F) {
-        self.handlers.insert(event_name.clone(), Handler {
-            name: event_name.clone(),
-            description: "".to_owned(),
-            handler_func: Arc::new(handler),
-        });
+    pub fn register<F: Fn(Context) -> SsuResult<()> + 'static + Send + Sync>(
+        &mut self,
+        event_name: String,
+        handler: F,
+    ) {
+        self.handlers.insert(
+            event_name.clone(),
+            Handler {
+                name: event_name.clone(),
+                description: "".to_owned(),
+                handler_func: Arc::new(handler),
+            },
+        );
     }
 
-    pub fn get_handler(&self, event_name : &str) -> Option<HandlerFuncArc> {
+    pub fn get_handler(&self, event_name: &str) -> Option<HandlerFuncArc> {
         match self.handlers.get(event_name) {
             None => None,
-            Some(handler) => Some(handler.handler_func.clone())
+            Some(handler) => Some(handler.handler_func.clone()),
         }
     }
 }
 
 pub fn new_registry() -> Registry {
     Registry {
-        handlers: HashMap::new()
+        handlers: HashMap::new(),
     }
 }
 
@@ -36,9 +43,9 @@ type HandlerFuncArc = Arc<HandlerFunc>;
 
 #[derive(Clone)]
 pub struct Handler {
-    pub name : String,
-    pub description : String,
-    pub handler_func : HandlerFuncArc,
+    pub name: String,
+    pub description: String,
+    pub handler_func: HandlerFuncArc,
 }
 
 pub fn playground() {
@@ -51,9 +58,13 @@ pub fn playground() {
         },
         msg: "".to_string(),
         context: crate::misc::context::Context {
-            offset_tracker: OffsetTracker { offsets: Arc::new(Default::default()), active_partitions: Arc::new(Default::default()) },
+            offset_tracker: OffsetTracker {
+                offsets: Arc::new(Default::default()),
+                active_partitions: Arc::new(Default::default()),
+            },
             bg_sender: s,
             bg_receiver: r,
         },
-    }).expect("TODO: panic message");
+    })
+    .expect("TODO: panic message");
 }

@@ -14,7 +14,9 @@ use crate::db::model::GithubAuditEventInsert;
 use crate::db::DbPool;
 use crate::misc::config::GithubS3Config;
 use crate::service::ingest::github::map_entry;
-use crate::service::ingest::{advance_watermark, get_watermark, record_run_error, SOURCE_GITHUB_S3};
+use crate::service::ingest::{
+    advance_watermark, get_watermark, record_run_error, SOURCE_GITHUB_S3,
+};
 
 const STALL_WARN_AFTER_SWEEPS: u32 = 3;
 
@@ -30,11 +32,12 @@ pub async fn run(cancel: CancellationToken, conf: GithubS3Config, pool: DbPool) 
         if conf.assume_role_arn.is_empty() {
             base.load().await
         } else {
-            let provider = aws_config::sts::AssumeRoleProvider::builder(conf.assume_role_arn.clone())
-                .session_name(conf.assume_role_session_name.clone())
-                .region(Region::new(conf.region.clone()))
-                .build()
-                .await;
+            let provider =
+                aws_config::sts::AssumeRoleProvider::builder(conf.assume_role_arn.clone())
+                    .session_name(conf.assume_role_session_name.clone())
+                    .region(Region::new(conf.region.clone()))
+                    .build()
+                    .await;
             base.credentials_provider(provider).load().await
         }
     };
@@ -46,17 +49,27 @@ pub async fn run(cancel: CancellationToken, conf: GithubS3Config, pool: DbPool) 
         conf.bucket,
         conf.prefix,
         interval.as_secs(),
-        if conf.assume_role_arn.is_empty() { "none" } else { conf.assume_role_arn.as_str() }
+        if conf.assume_role_arn.is_empty() {
+            "none"
+        } else {
+            conf.assume_role_arn.as_str()
+        }
     );
 
     let mut consecutive_failures: u32 = 0;
     loop {
-        info!("github-s3 sweep starting :: bucket={} prefix={}", conf.bucket, conf.prefix);
+        info!(
+            "github-s3 sweep starting :: bucket={} prefix={}",
+            conf.bucket, conf.prefix
+        );
         match run_once(&client, &conf, &pool).await {
             Ok(()) => consecutive_failures = 0,
             Err(e) => {
                 consecutive_failures += 1;
-                error!("github-s3 sweep failed (consecutive={}): {:#}", consecutive_failures, e);
+                error!(
+                    "github-s3 sweep failed (consecutive={}): {:#}",
+                    consecutive_failures, e
+                );
                 if consecutive_failures == STALL_WARN_AFTER_SWEEPS {
                     warn!(
                         "github-s3 ingest stalled: {} consecutive failed sweeps — console shows 'stalled'; last error: {:#}",
@@ -98,7 +111,8 @@ async fn run_once(client: &Client, conf: &GithubS3Config, pool: &DbPool) -> anyh
         keys.truncate(conf.max_objects_per_run as usize);
     }
 
-    let (events, cursor, max_event_at, scanned) = fetch_keys(client, &conf.bucket, &keys, conf.workers).await;
+    let (events, cursor, max_event_at, scanned) =
+        fetch_keys(client, &conf.bucket, &keys, conf.workers).await;
     if events.is_empty() && cursor.is_none() {
         return Ok(());
     }
@@ -134,7 +148,10 @@ async fn list_objects(
         if let Some(t) = &token {
             req = req.continuation_token(t);
         }
-        let resp = req.send().await.with_context(|| format!("list objects {}", prefix))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("list objects {}", prefix))?;
         for obj in resp.contents() {
             if let Some(k) = obj.key() {
                 if k.ends_with('/') {
@@ -166,19 +183,25 @@ async fn fetch_keys(
     bucket: &str,
     keys: &[String],
     workers: usize,
-) -> (Vec<GithubAuditEventInsert>, Option<String>, Option<DateTime<Utc>>, usize) {
-    let results: Vec<(String, anyhow::Result<Vec<GithubAuditEventInsert>>)> = stream::iter(keys.to_vec())
-        .map(|key| {
-            let client = client.clone();
-            let bucket = bucket.to_string();
-            async move {
-                let r = fetch_object(&client, &bucket, &key).await;
-                (key, r)
-            }
-        })
-        .buffer_unordered(workers.max(1))
-        .collect()
-        .await;
+) -> (
+    Vec<GithubAuditEventInsert>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    usize,
+) {
+    let results: Vec<(String, anyhow::Result<Vec<GithubAuditEventInsert>>)> =
+        stream::iter(keys.to_vec())
+            .map(|key| {
+                let client = client.clone();
+                let bucket = bucket.to_string();
+                async move {
+                    let r = fetch_object(&client, &bucket, &key).await;
+                    (key, r)
+                }
+            })
+            .buffer_unordered(workers.max(1))
+            .collect()
+            .await;
 
     let mut by_key: std::collections::HashMap<String, anyhow::Result<Vec<GithubAuditEventInsert>>> =
         results.into_iter().collect();
@@ -198,7 +221,10 @@ async fn fetch_keys(
                 cursor = Some(key.clone());
             }
             Some(Err(e)) => {
-                warn!("github-s3 object {} failed, halting sweep at last good key: {:#}", key, e);
+                warn!(
+                    "github-s3 object {} failed, halting sweep at last good key: {:#}",
+                    key, e
+                );
                 break;
             }
             None => break,
@@ -207,7 +233,11 @@ async fn fetch_keys(
     (events, cursor, max_event_at, scanned)
 }
 
-async fn fetch_object(client: &Client, bucket: &str, key: &str) -> anyhow::Result<Vec<GithubAuditEventInsert>> {
+async fn fetch_object(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> anyhow::Result<Vec<GithubAuditEventInsert>> {
     let obj = client
         .get_object()
         .bucket(bucket)
@@ -215,7 +245,12 @@ async fn fetch_object(client: &Client, bucket: &str, key: &str) -> anyhow::Resul
         .send()
         .await
         .with_context(|| format!("get object {}", key))?;
-    let bytes = obj.body.collect().await.with_context(|| format!("read body {}", key))?.into_bytes();
+    let bytes = obj
+        .body
+        .collect()
+        .await
+        .with_context(|| format!("read body {}", key))?
+        .into_bytes();
 
     let text = if is_gzipped(key) {
         let mut decoder = GzDecoder::new(&bytes[..]);
@@ -308,8 +343,16 @@ async fn commit(
                     .execute(conn)
                     .context("insert github_audit_events")? as i64;
             }
-            advance_watermark(conn, SOURCE_GITHUB_S3, cursor, max_event_at, None, objects, applied)
-                .context("advance watermark")?;
+            advance_watermark(
+                conn,
+                SOURCE_GITHUB_S3,
+                cursor,
+                max_event_at,
+                None,
+                objects,
+                applied,
+            )
+            .context("advance watermark")?;
             Ok(())
         })?;
         Ok(applied)

@@ -109,12 +109,21 @@ async fn sweep(cancel: &CancellationToken, conf: &RetentionConfig, pool: &DbPool
             break;
         }
         if target.days <= 0 {
-            info!("retention: {} disabled (days={})", target.label, target.days);
+            info!(
+                "retention: {} disabled (days={})",
+                target.label, target.days
+            );
             continue;
         }
         match prune(cancel, pool, &target, batch).await {
-            Ok(0) => info!("retention: {} already within {}d window", target.label, target.days),
-            Ok(n) => info!("retention: {} pruned {} rows older than {}d", target.label, n, target.days),
+            Ok(0) => info!(
+                "retention: {} already within {}d window",
+                target.label, target.days
+            ),
+            Ok(n) => info!(
+                "retention: {} pruned {} rows older than {}d",
+                target.label, n, target.days
+            ),
             Err(e) => error!("retention: {} prune failed: {:#}", target.label, e),
         }
     }
@@ -129,7 +138,10 @@ async fn prune(
     let mut total = 0i64;
     loop {
         if cancel.is_cancelled() {
-            warn!("retention: {} interrupted by shutdown after {} rows", target.label, total);
+            warn!(
+                "retention: {} interrupted by shutdown after {} rows",
+                target.label, total
+            );
             break;
         }
         let pool = pool.clone();

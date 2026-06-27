@@ -60,7 +60,12 @@ struct IdentityContextRow {
 }
 
 async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> Response {
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="entity.bundle");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "entity.bundle"
+    );
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<serde_json::Value>> {
         let _g = span.enter();
         use crate::schema::actors::dsl as ad;
@@ -176,8 +181,16 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
     match res {
         Ok(Ok(Some(v))) => Json(v).into_response(),
         Ok(Ok(None)) => (StatusCode::NOT_FOUND, "actor not found").into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -190,11 +203,21 @@ pub struct ActivityParams {
 /// Paginated activity for one actor (the inspect page's ACTIVITY pane). Same
 /// alias-unioned join as the `/entity/:id` bundle, but with limit/offset and a
 /// total so the page can browse past the bundled first 50.
-async fn activity_handler(State(pool): State<DbPool>, Path(id): Path<String>, Query(params): Query<ActivityParams>) -> Response {
+async fn activity_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<String>,
+    Query(params): Query<ActivityParams>,
+) -> Response {
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
     let offset = params.offset.unwrap_or(0).max(0);
 
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="entity.activity", db.statement = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "entity.activity",
+        db.statement = tracing::field::Empty
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<serde_json::Value> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
@@ -221,8 +244,16 @@ async fn activity_handler(State(pool): State<DbPool>, Path(id): Path<String>, Qu
 
     match res {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -253,10 +284,20 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|e| format!("invalid timestamp {}: {}", s, e))
 }
 
-async fn timeline_handler(State(pool): State<DbPool>, Path(id): Path<String>, Query(params): Query<TimelineParams>) -> Response {
+async fn timeline_handler(
+    State(pool): State<DbPool>,
+    Path(id): Path<String>,
+    Query(params): Query<TimelineParams>,
+) -> Response {
     let bucket = match params.bucket.as_deref().unwrap_or("hour") {
         b @ ("minute" | "hour" | "day") => b.to_owned(),
-        other => return (StatusCode::BAD_REQUEST, format!("invalid bucket: {}", other)).into_response(),
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid bucket: {}", other),
+            )
+                .into_response()
+        }
     };
     let now = Utc::now();
     let from = match params.from.as_deref().map(parse_ts).transpose() {
@@ -268,27 +309,42 @@ async fn timeline_handler(State(pool): State<DbPool>, Path(id): Path<String>, Qu
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="entity.timeline", db.statement = tracing::field::Empty);
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "entity.timeline",
+        db.statement = tracing::field::Empty
+    );
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<TimelineRow>> {
         let _g = span.enter();
         let mut conn = pool.get().unwrap();
-        let timeline_sql = "SELECT date_trunc($1, e.ts) AS bucket, e.source AS source, count(*) AS count \
+        let timeline_sql =
+            "SELECT date_trunc($1, e.ts) AS bucket, e.source AS source, count(*) AS count \
              FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
              WHERE aa.actor_id = $2 AND e.ts >= $3 AND e.ts <= $4 \
              GROUP BY 1, 2 ORDER BY 1 ASC";
         span.record("db.statement", timeline_sql);
         diesel::sql_query(timeline_sql)
-        .bind::<Text, _>(bucket)
-        .bind::<Text, _>(id)
-        .bind::<Timestamptz, _>(from)
-        .bind::<Timestamptz, _>(to)
-        .load(&mut conn)
+            .bind::<Text, _>(bucket)
+            .bind::<Text, _>(id)
+            .bind::<Timestamptz, _>(from)
+            .bind::<Timestamptz, _>(to)
+            .load(&mut conn)
     })
     .await;
 
     match res {
         Ok(Ok(rows)) => Json(rows).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

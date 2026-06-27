@@ -34,18 +34,27 @@ pub async fn fetch_roster(conf: &SelfserviceConfig) -> Vec<RosterMember> {
     }
     match fetch_roster_inner(conf).await {
         Ok(members) => {
-            info!("siem/actors: fetched {} roster members from selfservice-api", members.len());
+            info!(
+                "siem/actors: fetched {} roster members from selfservice-api",
+                members.len()
+            );
             members
         }
         Err(e) => {
-            warn!("siem/actors: roster fetch failed ({:#}) — falling back to unresolved", e);
+            warn!(
+                "siem/actors: roster fetch failed ({:#}) — falling back to unresolved",
+                e
+            );
             Vec::new()
         }
     }
 }
 
 async fn fetch_roster_inner(conf: &SelfserviceConfig) -> anyhow::Result<Vec<RosterMember>> {
-    let url = format!("{}/system/legacy/aad-aws-sync", conf.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/system/legacy/aad-aws-sync",
+        conf.base_url.trim_end_matches('/')
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
@@ -56,7 +65,11 @@ async fn fetch_roster_inner(conf: &SelfserviceConfig) -> anyhow::Result<Vec<Rost
         && !conf.client_secret.is_empty()
         && !conf.tenant_id.is_empty()
     {
-        Some(fetch_access_token(conf, &client).await.context("mint selfservice token")?)
+        Some(
+            fetch_access_token(conf, &client)
+                .await
+                .context("mint selfservice token")?,
+        )
     } else {
         warn!("siem/actors: no selfservice token or client credentials configured — roster request unauthenticated");
         None
@@ -87,7 +100,11 @@ fn parse_capability_roster(body: &Value) -> Vec<RosterMember> {
     let mut by_key: HashMap<String, RosterMember> = HashMap::new();
     for cap in &caps {
         let team = first_str(cap, &["name", "Name"]);
-        let members = match cap.get("members").or_else(|| cap.get("Members")).and_then(Value::as_array) {
+        let members = match cap
+            .get("members")
+            .or_else(|| cap.get("Members"))
+            .and_then(Value::as_array)
+        {
             Some(m) => m,
             None => continue,
         };
@@ -271,7 +288,12 @@ fn classify(
 
     if actor.contains('@') {
         if let Some(m) = roster.get(&lower) {
-            return (m.email.to_lowercase(), Kind::Person, Some(m.clone()), "email".to_string());
+            return (
+                m.email.to_lowercase(),
+                Kind::Person,
+                Some(m.clone()),
+                "email".to_string(),
+            );
         }
         if is_serviceish(&lower) {
             return (lower, Kind::Service, None, "email".to_string());
@@ -297,7 +319,12 @@ fn classify(
     // GUID actor maps to itself but gains kind=service + the SP's team/name.
     if let Some(m) = by_object_id.get(&lower) {
         let id = m.object_id.clone().unwrap_or_else(|| lower.clone());
-        return (id.to_lowercase(), Kind::Service, Some(m.clone()), "oidc".to_string());
+        return (
+            id.to_lowercase(),
+            Kind::Service,
+            Some(m.clone()),
+            "oidc".to_string(),
+        );
     }
 
     let alias_kind = match source {
@@ -307,10 +334,20 @@ fn classify(
     };
 
     if is_serviceish(&lower) {
-        return (actor.to_string(), Kind::Service, None, alias_kind.to_string());
+        return (
+            actor.to_string(),
+            Kind::Service,
+            None,
+            alias_kind.to_string(),
+        );
     }
 
-    (actor.to_string(), Kind::Unresolved, None, alias_kind.to_string())
+    (
+        actor.to_string(),
+        Kind::Unresolved,
+        None,
+        alias_kind.to_string(),
+    )
 }
 
 /// Derive the identity-origin badges for one raw `(source, actor)` appearance.
@@ -348,7 +385,11 @@ fn origins_for(source: &str, actor: &str, resolved_via_roster: bool) -> Vec<&'st
 
 /// Reconcile actors + aliases from the roster and the windowed union view.
 /// Runs inside `spawn_blocking`. Returns the number of canonical actors upserted.
-pub fn reconcile(conn: &mut PgConnection, roster: &[RosterMember], window_days: i64) -> anyhow::Result<usize> {
+pub fn reconcile(
+    conn: &mut PgConnection,
+    roster: &[RosterMember],
+    window_days: i64,
+) -> anyhow::Result<usize> {
     let floor = Utc::now() - Duration::days(window_days.max(1));
 
     let roster_map: HashMap<String, RosterMember> = roster
@@ -388,8 +429,12 @@ pub fn reconcile(conn: &mut PgConnection, roster: &[RosterMember], window_days: 
     // Aggregate per canonical id.
     let mut by_id: HashMap<String, Resolved> = HashMap::new();
     for a in &activity {
-        let (id, kind, member, alias_kind) = classify(&a.source, &a.actor, &roster_map, &by_object_id);
-        let member_email = member.as_ref().map(|m| m.email.clone()).filter(|e| e.contains('@'));
+        let (id, kind, member, alias_kind) =
+            classify(&a.source, &a.actor, &roster_map, &by_object_id);
+        let member_email = member
+            .as_ref()
+            .map(|m| m.email.clone())
+            .filter(|e| e.contains('@'));
         let entry = by_id.entry(id.clone()).or_insert_with(|| Resolved {
             id: id.clone(),
             kind,
@@ -540,7 +585,11 @@ mod tests {
     fn origins_kubernetes_supersedes_feed() {
         // k8s SA seen via CloudTrail → kubernetes only, not aws.
         assert_eq!(
-            origins_for("cloudtrail", "system:serviceaccount:kube-system:aws-node", false),
+            origins_for(
+                "cloudtrail",
+                "system:serviceaccount:kube-system:aws-node",
+                false
+            ),
             vec!["kubernetes"],
         );
     }
@@ -563,7 +612,10 @@ mod tests {
 
     #[test]
     fn origins_bare_selfservice_actor() {
-        assert_eq!(origins_for("selfservice", "bob", false), vec!["selfservice"]);
+        assert_eq!(
+            origins_for("selfservice", "bob", false),
+            vec!["selfservice"]
+        );
     }
 
     #[test]

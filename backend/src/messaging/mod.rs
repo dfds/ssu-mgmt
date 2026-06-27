@@ -1,13 +1,3 @@
-use std::sync::Arc;
-use crossbeam::channel::Sender;
-use dashmap::DashMap;
-use log::{debug, error, info, trace, warn};
-use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, StreamConsumer};
-use rdkafka::{Message, Offset, TopicPartitionList};
-use rdkafka::error::KafkaResult;
-use rdkafka::message::Headers;
-use tokio::runtime::Runtime;
-use tokio_util::sync::CancellationToken;
 use crate::messaging::consumer::CustomConsumerContext;
 use crate::messaging::handlers::register_handlers;
 use crate::messaging::model::{Context, Envelope};
@@ -16,18 +6,32 @@ use crate::messaging::registry::{new_registry, Registry};
 use crate::misc;
 use crate::misc::error::SsuResult;
 use crate::misc::services::ServicesShared;
+use crossbeam::channel::Sender;
+use dashmap::DashMap;
+use log::{debug, error, info, trace, warn};
+use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, StreamConsumer};
+use rdkafka::error::KafkaResult;
+use rdkafka::message::Headers;
+use rdkafka::{Message, Offset, TopicPartitionList};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
+use tokio_util::sync::CancellationToken;
 
-pub mod consumer;
 pub mod config;
-pub mod model;
-pub mod registry;
+pub mod consumer;
 pub mod handlers;
+pub mod model;
 pub mod offset_tracker;
+pub mod registry;
 
-pub const SS_CONTEXT_NAME : &str = "MESSAGING_CONTEXT";
+pub const SS_CONTEXT_NAME: &str = "MESSAGING_CONTEXT";
 
-pub async fn start_messaging(ct : CancellationToken, ss: ServicesShared) -> SsuResult<()> {
-    let context = ss.read().unwrap().get_named_service_clone::<misc::context::Context>(SS_CONTEXT_NAME).unwrap();
+pub async fn start_messaging(ct: CancellationToken, ss: ServicesShared) -> SsuResult<()> {
+    let context = ss
+        .read()
+        .unwrap()
+        .get_named_service_clone::<misc::context::Context>(SS_CONTEXT_NAME)
+        .unwrap();
     let mut registry = new_registry();
     register_handlers(&mut registry);
     let m_consumer = consumer::create_consumer_base(context.offset_tracker.clone())?;
@@ -37,13 +41,18 @@ pub async fn start_messaging(ct : CancellationToken, ss: ServicesShared) -> SsuR
     // tokio::spawn(offset_updater(ct.clone(), context.offset_tracker.clone()));
 
     std::thread::spawn(move || {
-       consumer_loop_base(m_consumer, ct.clone(), context.clone(), registry);
+        consumer_loop_base(m_consumer, ct.clone(), context.clone(), registry);
     });
 
     Ok(())
 }
 
-fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : CancellationToken, context: misc::context::Context, registry: Registry) {
+fn consumer_loop_base(
+    consumer: BaseConsumer<CustomConsumerContext>,
+    ct: CancellationToken,
+    context: misc::context::Context,
+    registry: Registry,
+) {
     let mut last_offset_update_time = chrono::Utc::now().naive_utc();
 
     loop {
@@ -52,11 +61,17 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
             break;
         }
 
-        let poll_resp = consumer.poll(rdkafka::util::Timeout::After(std::time::Duration::from_secs(1)));
+        let poll_resp = consumer.poll(rdkafka::util::Timeout::After(
+            std::time::Duration::from_secs(1),
+        ));
         match poll_resp {
             None => {
                 let time_now = chrono::Utc::now().naive_utc();
-                if time_now.signed_duration_since(last_offset_update_time).num_seconds() >= 30 {
+                if time_now
+                    .signed_duration_since(last_offset_update_time)
+                    .num_seconds()
+                    >= 30
+                {
                     trace!("Updating offsets");
                     trace!("offset tracker stats");
                     for x in context.offset_tracker.offsets.as_ref() {
@@ -66,18 +81,22 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                         let mut tpl = TopicPartitionList::new();
                         for x in context.offset_tracker.offsets.as_ref() {
                             tpl.add_partition("cloudengineering.selfservice.audit", *x.key());
-                            tpl.set_partition_offset("cloudengineering.selfservice.audit", *x.key(), Offset::Offset(*x.value()));
+                            tpl.set_partition_offset(
+                                "cloudengineering.selfservice.audit",
+                                *x.key(),
+                                Offset::Offset(*x.value()),
+                            );
                         }
 
-                        let _commit_span = tracing::info_span!(
-                            "kafka.commit_offsets",
-                            partitions = tpl.count()
-                        )
-                        .entered();
-                        consumer.commit(&tpl, CommitMode::Sync).unwrap_or_else(|err| {
-                            error!("{:?}", err);
-                            ()
-                        });
+                        let _commit_span =
+                            tracing::info_span!("kafka.commit_offsets", partitions = tpl.count())
+                                .entered();
+                        consumer
+                            .commit(&tpl, CommitMode::Sync)
+                            .unwrap_or_else(|err| {
+                                error!("{:?}", err);
+                                ()
+                            });
                     }
                     last_offset_update_time = chrono::Utc::now().naive_utc();
                 }
@@ -102,7 +121,8 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                             }
                         }
 
-                        let envelope : SsuResult<Envelope> = serde_json::from_str(payload).map_err(|e| e.into());
+                        let envelope: SsuResult<Envelope> =
+                            serde_json::from_str(payload).map_err(|e| e.into());
                         match envelope {
                             Ok(data) => {
                                 let _span = tracing::info_span!(
@@ -117,27 +137,33 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
                                 .entered();
                                 match registry.get_handler(&data._type) {
                                     None => {
-                                        debug!("No handler registered for event type {}, skipping", &data._type);
-                                    },
+                                        debug!(
+                                            "No handler registered for event type {}, skipping",
+                                            &data._type
+                                        );
+                                    }
                                     Some(handler) => {
                                         let resp = handler(Context {
                                             event: data.clone(),
                                             msg: payload.to_owned(),
-                                            context: context.clone()
-                                        }
-                                        );
+                                            context: context.clone(),
+                                        });
 
                                         if let Err(e) = resp {
                                             error!("{:?}", e);
                                         }
-                                    }}
+                                    }
+                                }
                             }
                             Err(_) => {
                                 error!("Unknown message format, skipping")
                             }
                         }
 
-                        context.offset_tracker.offsets.insert(m.partition(), m.offset() + 1);
+                        context
+                            .offset_tracker
+                            .offsets
+                            .insert(m.partition(), m.offset() + 1);
                     }
                 };
             }
@@ -145,7 +171,12 @@ fn consumer_loop_base(consumer : BaseConsumer<CustomConsumerContext>, ct : Cance
     }
 }
 
-async fn consumer_loop(consumer : StreamConsumer<CustomConsumerContext>, ct : CancellationToken, context: misc::context::Context, registry: Registry) {
+async fn consumer_loop(
+    consumer: StreamConsumer<CustomConsumerContext>,
+    ct: CancellationToken,
+    context: misc::context::Context,
+    registry: Registry,
+) {
     loop {
         tokio::select! {
             _ = ct.cancelled() => {

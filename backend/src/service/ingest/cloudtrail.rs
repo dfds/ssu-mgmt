@@ -20,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 use crate::db::model::CloudtrailEventInsert;
 use crate::db::DbPool;
 use crate::misc::config::CloudtrailConfig;
-use crate::service::ingest::{advance_watermark, get_watermark, record_run_error, SOURCE_CLOUDTRAIL};
+use crate::service::ingest::{
+    advance_watermark, get_watermark, record_run_error, SOURCE_CLOUDTRAIL,
+};
 
 /// Consecutive failed sweeps before the loop escalates from a per-sweep `error!`
 /// to a single louder `warn!` — the backend counterpart to the console's red
@@ -123,11 +125,12 @@ pub async fn run(cancel: CancellationToken, conf: CloudtrailConfig, pool: DbPool
             // Cross-account hop: the pod's role assumes a role in the bucket's
             // account before reading. AssumeRoleProvider (not a one-shot STS call)
             // so the long-running loop's ~1h creds auto-refresh.
-            let provider = aws_config::sts::AssumeRoleProvider::builder(conf.assume_role_arn.clone())
-                .session_name(conf.assume_role_session_name.clone())
-                .region(Region::new(conf.region.clone()))
-                .build()
-                .await;
+            let provider =
+                aws_config::sts::AssumeRoleProvider::builder(conf.assume_role_arn.clone())
+                    .session_name(conf.assume_role_session_name.clone())
+                    .region(Region::new(conf.region.clone()))
+                    .build()
+                    .await;
             base.credentials_provider(provider).load().await
         }
     };
@@ -140,7 +143,11 @@ pub async fn run(cancel: CancellationToken, conf: CloudtrailConfig, pool: DbPool
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        if configured.is_empty() { default_allowlist() } else { configured }
+        if configured.is_empty() {
+            default_allowlist()
+        } else {
+            configured
+        }
     };
 
     let interval = std::time::Duration::from_secs(conf.poll_interval_secs.max(30));
@@ -162,7 +169,10 @@ pub async fn run(cancel: CancellationToken, conf: CloudtrailConfig, pool: DbPool
         // of this line is the tell that the loop isn't running at all (ingest
         // disabled, or you're reading an API-only replica's logs), which is the
         // usual cause of a "stalled" console badge with no matching backend log.
-        info!("cloudtrail sweep starting :: bucket={} window_days={}", conf.bucket, conf.window_days);
+        info!(
+            "cloudtrail sweep starting :: bucket={} window_days={}",
+            conf.bucket, conf.window_days
+        );
         let mut more_backlog = false;
         match run_once(&cancel, &client, &conf, &allowlist, &pool).await {
             Ok(budget_hit) => {
@@ -171,7 +181,10 @@ pub async fn run(cancel: CancellationToken, conf: CloudtrailConfig, pool: DbPool
             }
             Err(e) => {
                 consecutive_failures += 1;
-                error!("cloudtrail sweep failed (consecutive={}): {:#}", consecutive_failures, e);
+                error!(
+                    "cloudtrail sweep failed (consecutive={}): {:#}",
+                    consecutive_failures, e
+                );
                 if consecutive_failures == STALL_WARN_AFTER_SWEEPS {
                     warn!(
                         "cloudtrail ingest stalled: {} consecutive failed sweeps — console shows 'stalled'; last error: {:#}",
@@ -213,16 +226,29 @@ pub async fn run(cancel: CancellationToken, conf: CloudtrailConfig, pool: DbPool
             .await
             {
                 Ok(Ok(0)) => {}
-                Ok(Ok(n)) => info!("cloudtrail: resolved {} web-identity chain actor(s) to subject", n),
-                Ok(Err(e)) => warn!("cloudtrail web-identity chain resolution failed (non-fatal): {:#}", e),
-                Err(e) => warn!("cloudtrail web-identity chain resolution join error: {:#}", e),
+                Ok(Ok(n)) => info!(
+                    "cloudtrail: resolved {} web-identity chain actor(s) to subject",
+                    n
+                ),
+                Ok(Err(e)) => warn!(
+                    "cloudtrail web-identity chain resolution failed (non-fatal): {:#}",
+                    e
+                ),
+                Err(e) => warn!(
+                    "cloudtrail web-identity chain resolution join error: {:#}",
+                    e
+                ),
             }
         }
 
         // A budget-bounded sweep that still has backlog re-sweeps promptly rather
         // than idling the full poll interval, so catch-up is continuous; once
         // drained (no budget hit) it settles back to `interval`.
-        let next = if more_backlog { BACKFILL_RESWEEP } else { interval };
+        let next = if more_backlog {
+            BACKFILL_RESWEEP
+        } else {
+            interval
+        };
         tokio::select! {
             _ = cancel.cancelled() => { info!("stopping cloudtrail ingest"); break; }
             _ = tokio::time::sleep(next) => {}
@@ -296,7 +322,10 @@ async fn run_once(
         // process can't exit until the whole sweep finishes. Committed cursors are
         // already durable, so stopping here just resumes mid-sweep next time.
         if cancel.is_cancelled() {
-            info!("cloudtrail sweep interrupted by shutdown after {} account(s)", step);
+            info!(
+                "cloudtrail sweep interrupted by shutdown after {} account(s)",
+                step
+            );
             break 'sweep;
         }
         let account_idx = (start_idx + step) % n;
@@ -335,7 +364,8 @@ async fn run_once(
                 let bucket = conf.bucket.clone();
                 let start_after = cursors.get(&day_prefix).cloned();
                 async move {
-                    match list_objects(&client, &bucket, &day_prefix, start_after.as_deref()).await {
+                    match list_objects(&client, &bucket, &day_prefix, start_after.as_deref()).await
+                    {
                         Ok(keys) => (day_prefix, keys),
                         Err(e) => {
                             // A transient LIST failure skips this prefix for the
@@ -343,7 +373,10 @@ async fn run_once(
                             // sweep) rather than failing the whole pass. A systemic
                             // failure (bad creds/region) trips the region LIST above
                             // first, which propagates and records the run error.
-                            warn!("cloudtrail list {} failed (skipped this sweep): {:#}", day_prefix, e);
+                            warn!(
+                                "cloudtrail list {} failed (skipped this sweep): {:#}",
+                                day_prefix, e
+                            );
                             (day_prefix, Vec::new())
                         }
                     }
@@ -472,22 +505,44 @@ async fn run_once(
     // account 0. Persist the sweep totals + cursor map + newest event time.
     prune_cursors(&mut cursors, floor);
     match &resume_account {
-        Some(acct) => { cursors.insert(RESUME_ACCOUNT_KEY.to_string(), acct.clone()); }
-        None => { cursors.remove(RESUME_ACCOUNT_KEY); }
+        Some(acct) => {
+            cursors.insert(RESUME_ACCOUNT_KEY.to_string(), acct.clone());
+        }
+        None => {
+            cursors.remove(RESUME_ACCOUNT_KEY);
+        }
     }
-    finalize_sweep(pool, &cursors, objects_total, events_total, sweep_max_event_at).await?;
+    finalize_sweep(
+        pool,
+        &cursors,
+        objects_total,
+        events_total,
+        sweep_max_event_at,
+    )
+    .await?;
 
     info!(
         "cloudtrail sweep complete :: objects={} events_applied={} accounts={} elapsed={}s{}",
-        objects_total, events_total, n, started.elapsed().as_secs(),
-        if budget_hit { " (budget hit — more backlog pending, re-sweeping soon)" } else { "" }
+        objects_total,
+        events_total,
+        n,
+        started.elapsed().as_secs(),
+        if budget_hit {
+            " (budget hit — more backlog pending, re-sweeping soon)"
+        } else {
+            ""
+        }
     );
     Ok(budget_hit)
 }
 
 /// List the immediate `CommonPrefixes` under `prefix` (delimiter `/`) — used to
 /// discover accounts then regions without enumerating their contents.
-async fn list_common_prefixes(client: &Client, bucket: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
+async fn list_common_prefixes(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+) -> anyhow::Result<Vec<String>> {
     let mut out = Vec::new();
     let mut token: Option<String> = None;
     loop {
@@ -499,7 +554,10 @@ async fn list_common_prefixes(client: &Client, bucket: &str, prefix: &str) -> an
         if let Some(t) = &token {
             req = req.continuation_token(t);
         }
-        let resp = req.send().await.with_context(|| format!("list common prefixes {}", prefix))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("list common prefixes {}", prefix))?;
         for cp in resp.common_prefixes() {
             if let Some(p) = cp.prefix() {
                 out.push(p.to_string());
@@ -537,7 +595,10 @@ async fn list_objects(
         if let Some(t) = &token {
             req = req.continuation_token(t);
         }
-        let resp = req.send().await.with_context(|| format!("list objects {}", prefix))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("list objects {}", prefix))?;
         for obj in resp.contents() {
             if let Some(k) = obj.key() {
                 if k.ends_with('/') {
@@ -579,24 +640,31 @@ async fn fetch_prefix(
     conf: &CloudtrailConfig,
     allowlist: &[String],
     floor: DateTime<Utc>,
-) -> (Vec<CloudtrailEventInsert>, Option<String>, Option<DateTime<Utc>>, usize) {
-    let results: Vec<(String, anyhow::Result<Vec<CloudtrailEventInsert>>)> = stream::iter(keys.to_vec())
-        .map(|key| {
-            let client = client.clone();
-            let bucket = bucket.to_string();
-            let allow = allowlist.to_vec();
-            let mgmt_only = conf.management_events_only;
-            async move {
-                let r = fetch_object(&client, &bucket, &key, allow, mgmt_only, floor).await;
-                (key, r)
-            }
-        })
-        .buffer_unordered(conf.workers.max(1))
-        .collect()
-        .await;
+) -> (
+    Vec<CloudtrailEventInsert>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    usize,
+) {
+    let results: Vec<(String, anyhow::Result<Vec<CloudtrailEventInsert>>)> =
+        stream::iter(keys.to_vec())
+            .map(|key| {
+                let client = client.clone();
+                let bucket = bucket.to_string();
+                let allow = allowlist.to_vec();
+                let mgmt_only = conf.management_events_only;
+                async move {
+                    let r = fetch_object(&client, &bucket, &key, allow, mgmt_only, floor).await;
+                    (key, r)
+                }
+            })
+            .buffer_unordered(conf.workers.max(1))
+            .collect()
+            .await;
 
     // Reassemble in lexical (== time) order; stop the cursor at the first failure.
-    let mut by_key: HashMap<String, anyhow::Result<Vec<CloudtrailEventInsert>>> = results.into_iter().collect();
+    let mut by_key: HashMap<String, anyhow::Result<Vec<CloudtrailEventInsert>>> =
+        results.into_iter().collect();
     let mut events = Vec::new();
     let mut cursor: Option<String> = None;
     let mut max_event_at: Option<DateTime<Utc>> = None;
@@ -613,7 +681,10 @@ async fn fetch_prefix(
                 cursor = Some(key.clone());
             }
             Some(Err(e)) => {
-                warn!("cloudtrail object {} failed, halting prefix at last good key: {:#}", key, e);
+                warn!(
+                    "cloudtrail object {} failed, halting prefix at last good key: {:#}",
+                    key, e
+                );
                 break;
             }
             None => break,
@@ -643,12 +714,20 @@ async fn fetch_object(
         .send()
         .await
         .with_context(|| format!("get object {}", key))?;
-    let bytes = obj.body.collect().await.with_context(|| format!("read body {}", key))?.into_bytes().to_vec();
+    let bytes = obj
+        .body
+        .collect()
+        .await
+        .with_context(|| format!("read body {}", key))?
+        .into_bytes()
+        .to_vec();
 
     let key_owned = key.to_string();
-    tokio::task::spawn_blocking(move || decode_and_map(bytes, &key_owned, &allowlist, management_only, floor))
-        .await
-        .with_context(|| format!("decode task join {}", key))?
+    tokio::task::spawn_blocking(move || {
+        decode_and_map(bytes, &key_owned, &allowlist, management_only, floor)
+    })
+    .await
+    .with_context(|| format!("decode task join {}", key))?
 }
 
 /// CPU-bound half of `fetch_object`: gunzip → JSON-parse → allowlist/management
@@ -682,12 +761,19 @@ fn decode_and_map(
             continue;
         }
         let category = rec.get("eventCategory").and_then(Value::as_str);
-        let is_management = category.map(|c| c == "Management")
-            .unwrap_or_else(|| rec.get("managementEvent").and_then(Value::as_bool).unwrap_or(true));
+        let is_management = category.map(|c| c == "Management").unwrap_or_else(|| {
+            rec.get("managementEvent")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        });
         if management_only && !is_management {
             continue;
         }
-        let event_time = match rec.get("eventTime").and_then(Value::as_str).and_then(parse_event_time) {
+        let event_time = match rec
+            .get("eventTime")
+            .and_then(Value::as_str)
+            .and_then(parse_event_time)
+        {
             Some(t) => t,
             None => continue,
         };
@@ -704,7 +790,11 @@ fn decode_and_map(
             event_id,
             event_time,
             event_name: event_name.to_string(),
-            event_source: rec.get("eventSource").and_then(Value::as_str).unwrap_or("").to_string(),
+            event_source: rec
+                .get("eventSource")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             aws_region: str_field(rec, "awsRegion"),
             recipient_account_id: str_field(rec, "recipientAccountId"),
             user_identity_account_id: rec
@@ -771,7 +861,11 @@ fn principal_name(rec: &Value) -> Option<String> {
 
     // 1. Explicit userName — IAM users, and the OIDC subject for WebIdentityUser
     //    (kept as the actor so object-id reconciliation can later stitch it).
-    if let Some(n) = ui.get("userName").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    if let Some(n) = ui
+        .get("userName")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         return Some(n.to_string());
     }
 
@@ -813,9 +907,9 @@ fn principal_name(rec: &Value) -> Option<String> {
     }
 
     // 5. ARN tail (general fallback).
-    ui.get("arn").and_then(Value::as_str).map(|arn| {
-        arn.rsplit(['/', ':']).next().unwrap_or(arn).to_string()
-    })
+    ui.get("arn")
+        .and_then(Value::as_str)
+        .map(|arn| arn.rsplit(['/', ':']).next().unwrap_or(arn).to_string())
 }
 
 /// The assumed-role session name: the ARN tail after the last `/`, or the
@@ -861,7 +955,10 @@ fn is_opaque_session_name(name: &str) -> bool {
 }
 
 fn role_session_base(ui: &Value) -> Option<String> {
-    let arn = ui.get("arn").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+    let arn = ui
+        .get("arn")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
     let base = arn.rsplit_once('/').map(|(head, _)| head).unwrap_or(arn);
     if base.is_empty() {
         None
@@ -921,7 +1018,11 @@ fn identity_source(rec: &Value) -> Option<String> {
                 .and_then(Value::as_str)
         })
         .filter(|s| !s.is_empty());
-    if ty == Some("WebIdentityUser") || provider.map(|p| p.contains("oidc-provider")).unwrap_or(false) {
+    if ty == Some("WebIdentityUser")
+        || provider
+            .map(|p| p.contains("oidc-provider"))
+            .unwrap_or(false)
+    {
         if let Some(host) = provider.and_then(oidc_host) {
             return Some(format!("oidc:{}", host));
         }
@@ -998,8 +1099,14 @@ pub async fn backfill_identity(cancel: CancellationToken, pool: DbPool) {
     // `recipient_account_id` needs no backfill — the ingester has always written it.
     match backfill_caller_account_inner(&cancel, &pool).await {
         Ok(0) => info!("cloudtrail backfill_identity: no caller-account rows to backfill"),
-        Ok(n) => info!("cloudtrail backfill_identity: populated user_identity_account_id on {} row(s)", n),
-        Err(e) => warn!("cloudtrail caller-account backfill failed (non-fatal): {:#}", e),
+        Ok(n) => info!(
+            "cloudtrail backfill_identity: populated user_identity_account_id on {} row(s)",
+            n
+        ),
+        Err(e) => warn!(
+            "cloudtrail caller-account backfill failed (non-fatal): {:#}",
+            e
+        ),
     }
 }
 
@@ -1038,9 +1145,15 @@ async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> a
                            identity_source  = COALESCE($3, '') \
                          WHERE event_id = $4 AND event_time = $5",
                     )
-                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(id.principal_name.clone())
-                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(id.assumed_role_arn.clone())
-                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(id.identity_source.clone())
+                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                        id.principal_name.clone(),
+                    )
+                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                        id.assumed_role_arn.clone(),
+                    )
+                    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                        id.identity_source.clone(),
+                    )
                     .bind::<diesel::sql_types::Text, _>(&r.event_id)
                     .bind::<diesel::sql_types::Timestamptz, _>(r.event_time)
                     .execute(conn)
@@ -1057,7 +1170,10 @@ async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> a
             break;
         }
         total += updated;
-        info!("cloudtrail backfill_identity: {} rows updated so far", total);
+        info!(
+            "cloudtrail backfill_identity: {} rows updated so far",
+            total
+        );
     }
     Ok(total)
 }
@@ -1076,7 +1192,10 @@ async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> a
 /// would still be opaque. Chunked by `ctid` to bound lock duration, cancellation-aware
 /// between batches, idempotent, never fatal. Web-identity subjects (`system:service...`)
 /// aren't opaque, so already-resolved rows are left untouched.
-async fn backfill_opaque_sessions_inner(cancel: &CancellationToken, pool: &DbPool) -> anyhow::Result<i64> {
+async fn backfill_opaque_sessions_inner(
+    cancel: &CancellationToken,
+    pool: &DbPool,
+) -> anyhow::Result<i64> {
     let mut total = 0i64;
     loop {
         if cancel.is_cancelled() {
@@ -1116,7 +1235,10 @@ async fn backfill_opaque_sessions_inner(cancel: &CancellationToken, pool: &DbPoo
             break;
         }
         total += updated;
-        info!("cloudtrail backfill_identity: {} opaque-session rows normalized so far", total);
+        info!(
+            "cloudtrail backfill_identity: {} opaque-session rows normalized so far",
+            total
+        );
     }
     Ok(total)
 }
@@ -1128,7 +1250,10 @@ async fn backfill_opaque_sessions_inner(cancel: &CancellationToken, pool: &DbPoo
 /// terminate (a populated row drops out of the filter) and idempotent (a re-run is a
 /// no-op). Rows whose raw event carries no `userIdentity.accountId` stay NULL forever,
 /// so they're not reselected. Never fatal.
-async fn backfill_caller_account_inner(cancel: &CancellationToken, pool: &DbPool) -> anyhow::Result<i64> {
+async fn backfill_caller_account_inner(
+    cancel: &CancellationToken,
+    pool: &DbPool,
+) -> anyhow::Result<i64> {
     let mut total = 0i64;
     loop {
         if cancel.is_cancelled() {
@@ -1161,11 +1286,13 @@ async fn backfill_caller_account_inner(cancel: &CancellationToken, pool: &DbPool
             break;
         }
         total += updated;
-        info!("cloudtrail backfill_identity: {} caller-account rows populated so far", total);
+        info!(
+            "cloudtrail backfill_identity: {} caller-account rows populated so far",
+            total
+        );
     }
     Ok(total)
 }
-
 
 #[tracing::instrument(name = "cloudtrail.webid_resolve", skip_all, fields(window_days = window_days))]
 fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyhow::Result<usize> {
@@ -1282,11 +1409,16 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
 }
 
 fn str_field(rec: &Value, key: &str) -> Option<String> {
-    rec.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+    rec.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn parse_event_time(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 // ---- watermark / cursor persistence ---------------------------------------
@@ -1493,7 +1625,7 @@ mod tests {
         );
         assert_eq!(id.identity_source.as_deref(), Some("aws-sso"));
     }
-    
+
     fn irsa_chained_assume_role() -> Value {
         json!({
             "eventName": "AssumeRole",
@@ -1541,14 +1673,19 @@ mod tests {
         assert!(is_opaque_session_name("71f4c55c9a6043cbbe67f767953dff14")); // 32-hex
         assert!(is_opaque_session_name("botocore-session-1781097095"));
         assert!(!is_opaque_session_name("alice@dfds.com"));
-        assert!(!is_opaque_session_name("system:serviceaccount:external-dns:external-dns"));
+        assert!(!is_opaque_session_name(
+            "system:serviceaccount:external-dns:external-dns"
+        ));
         assert!(!is_opaque_session_name("ExampleAppSession"));
     }
 
     #[test]
     fn web_identity_keeps_subject_and_surfaces_provider_and_role() {
         let id = derive_identity(&web_identity());
-        assert_eq!(id.principal_name.as_deref(), Some("22222222-2222-2222-2222-222222222222"));
+        assert_eq!(
+            id.principal_name.as_deref(),
+            Some("22222222-2222-2222-2222-222222222222")
+        );
         assert_eq!(
             id.identity_source.as_deref(),
             Some("oidc:sts.windows.net/11111111-1111-1111-1111-111111111111"),

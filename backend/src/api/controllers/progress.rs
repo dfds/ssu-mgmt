@@ -31,7 +31,11 @@ pub fn routes(state: WebSharedState) -> Router {
         .with_state(state)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WebSharedState>, headers: HeaderMap) -> Response {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<WebSharedState>,
+    headers: HeaderMap,
+) -> Response {
     let conf = load_conf().unwrap();
 
     // Pull the bearer token out of the WS subprotocol header (`bearer, <jwt>`).
@@ -62,7 +66,13 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WebSharedState>, h
 }
 
 async fn validate(state: &WebSharedState, token: &str) -> bool {
-    let auth_svc = state.jwt_validator.layer(Value::default()).auths.first().unwrap().clone();
+    let auth_svc = state
+        .jwt_validator
+        .layer(Value::default())
+        .auths
+        .first()
+        .unwrap()
+        .clone();
     match auth_svc.check_auth(token).await {
         Ok(token_data) => token_data
             .claims
@@ -157,7 +167,11 @@ async fn push_snapshots(socket: &mut WebSocket, pool: &DbPool) -> Result<(), ()>
         _ => return Ok(()),
     };
 
-    for (ty, payload) in [("ingest_health", ingest), ("kpis", kpis), ("alerts", alerts)] {
+    for (ty, payload) in [
+        ("ingest_health", ingest),
+        ("kpis", kpis),
+        ("alerts", alerts),
+    ] {
         let frame = json!({ "type": ty, "payload": payload }).to_string();
         if socket.send(Message::Text(frame)).await.is_err() {
             return Err(());

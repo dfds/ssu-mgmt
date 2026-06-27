@@ -1,11 +1,11 @@
-use log::info;
-use serde::{Deserialize, Serialize};
 use crate::messaging::model::{Context, EnvelopeWithPayload};
 use crate::misc::error::SsuResult;
 use crate::service::bg::Message;
+use log::info;
+use serde::{Deserialize, Serialize};
 
 pub fn user_action_handler(context: Context) -> SsuResult<()> {
-    let ewp : EnvelopeWithPayload<UserActionMessage> = serde_json::from_str(&context.msg)?;
+    let ewp: EnvelopeWithPayload<UserActionMessage> = serde_json::from_str(&context.msg)?;
     context.context.bg_sender.send(Message::UserAction(ewp));
     Ok(())
 }

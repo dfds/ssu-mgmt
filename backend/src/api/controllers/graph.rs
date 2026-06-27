@@ -16,7 +16,9 @@ use crate::db::DbPool;
 const NODE_CAP: usize = 150;
 
 pub fn routes(pool: DbPool) -> Router {
-    Router::new().route("/", axum::routing::get(graph_handler)).with_state(pool)
+    Router::new()
+        .route("/", axum::routing::get(graph_handler))
+        .with_state(pool)
 }
 
 #[derive(Deserialize)]
@@ -95,7 +97,12 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
         return (StatusCode::BAD_REQUEST, "entity mode requires ?actor=").into_response();
     }
 
-    let span = tracing::info_span!("db.query", otel.kind = "client", db.system = "postgresql", op ="graph.aggregate");
+    let span = tracing::info_span!(
+        "db.query",
+        otel.kind = "client",
+        db.system = "postgresql",
+        op = "graph.aggregate"
+    );
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
         let _g = span.enter();
         let mut conn = pool.get()?;
@@ -283,7 +290,15 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
 
     match res {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {}", e)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("task join error: {}", e)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("db error: {}", e),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {}", e),
+        )
+            .into_response(),
     }
 }

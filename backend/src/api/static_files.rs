@@ -53,10 +53,12 @@ fn build_response(path: &str, body: Vec<u8>, cache: CacheKind) -> Response {
     let headers = resp.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(mime.as_ref()).unwrap_or_else(|_| {
-            HeaderValue::from_static("application/octet-stream")
-        }),
+        HeaderValue::from_str(mime.as_ref())
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
     resp
 }

@@ -45,7 +45,10 @@ pub fn detect(conn: &mut PgConnection, geoip: &GeoIp, siem: &SiemConfig) -> anyh
     // Cache geo lookups; many events share an IP.
     let mut geo_cache: HashMap<String, Option<GeoPoint>> = HashMap::new();
     let mut geo = |ip: &str| -> Option<GeoPoint> {
-        geo_cache.entry(ip.to_string()).or_insert_with(|| geoip.lookup_geo(ip)).clone()
+        geo_cache
+            .entry(ip.to_string())
+            .or_insert_with(|| geoip.lookup_geo(ip))
+            .clone()
     };
 
     // Per actor, walk consecutive *distinct* geolocated points.
@@ -58,7 +61,9 @@ pub fn detect(conn: &mut PgConnection, geoip: &GeoIp, siem: &SiemConfig) -> anyh
             cur_actor = Some(l.actor_id.as_str());
             last = None;
         }
-        let Some(point) = geo(&l.source_ip) else { continue };
+        let Some(point) = geo(&l.source_ip) else {
+            continue;
+        };
         if let Some((prev_ip, prev_point, prev_time)) = &last {
             if *prev_ip != l.source_ip {
                 let km = haversine_km(prev_point, &point);
