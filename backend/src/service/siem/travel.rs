@@ -12,9 +12,13 @@ use crate::misc::config::SiemConfig;
 use crate::service::siem::geoip::{haversine_km, GeoIp, GeoPoint};
 
 #[derive(QueryableByName)]
-struct Login {
+struct Transition {
     #[diesel(sql_type = Text)]
     actor_id: String,
+    #[diesel(sql_type = Text)]
+    prev_ip: String,
+    #[diesel(sql_type = Timestamptz)]
+    prev_time: DateTime<Utc>,
     #[diesel(sql_type = Text)]
     source_ip: String,
     #[diesel(sql_type = Timestamptz)]
@@ -30,19 +34,24 @@ pub fn detect(conn: &mut PgConnection, geoip: &GeoIp, siem: &SiemConfig) -> anyh
     }
     let floor = Utc::now() - Duration::days(siem.window_days.max(1));
 
-    // Resolved logins only (actor known, ip present), ordered for pairing.
-    let logins: Vec<Login> = diesel::sql_query(
-        "SELECT aa.actor_id AS actor_id, c.source_ip AS source_ip, c.event_time AS event_time \
-         FROM cloudtrail_events c JOIN actor_aliases aa ON aa.alias = COALESCE(c.principal_name, c.principal_arn) \
-         WHERE c.event_name IN ('ConsoleLogin','AssumeRole','AssumeRoleWithSAML','AssumeRoleWithWebIdentity') \
-           AND c.source_ip IS NOT NULL AND c.event_time >= $1 \
-         ORDER BY aa.actor_id, c.event_time ASC",
+    let transitions: Vec<Transition> = diesel::sql_query(
+        "SELECT actor_id, prev_ip, prev_time, source_ip, event_time FROM ( \
+           SELECT aa.actor_id AS actor_id, c.source_ip AS source_ip, c.event_time AS event_time, \
+                  lag(c.source_ip) OVER w AS prev_ip, \
+                  lag(c.event_time) OVER w AS prev_time \
+           FROM cloudtrail_events c \
+           JOIN actor_aliases aa ON aa.alias = COALESCE(c.principal_name, c.principal_arn) \
+           WHERE c.event_name IN ('ConsoleLogin','AssumeRole','AssumeRoleWithSAML','AssumeRoleWithWebIdentity') \
+             AND c.source_ip IS NOT NULL AND c.event_time >= $1 \
+           WINDOW w AS (PARTITION BY aa.actor_id ORDER BY c.event_time ASC) \
+         ) t \
+         WHERE prev_ip IS NOT NULL AND prev_ip IS DISTINCT FROM source_ip",
     )
     .bind::<Timestamptz, _>(floor)
     .load(conn)
-    .context("load travel logins")?;
+    .context("load travel transitions")?;
 
-    // Cache geo lookups; many events share an IP.
+    // Cache geo lookups; transitions reuse the same handful of IPs.
     let mut geo_cache: HashMap<String, Option<GeoPoint>> = HashMap::new();
     let mut geo = |ip: &str| -> Option<GeoPoint> {
         geo_cache
@@ -50,41 +59,30 @@ pub fn detect(conn: &mut PgConnection, geoip: &GeoIp, siem: &SiemConfig) -> anyh
             .or_insert_with(|| geoip.lookup_geo(ip))
             .clone()
     };
-
-    // Per actor, walk consecutive *distinct* geolocated points.
+    
     let mut pairs: Vec<TravelPair> = Vec::new();
-    let mut cur_actor: Option<&str> = None;
-    let mut last: Option<(String, GeoPoint, DateTime<Utc>)> = None; // (ip, point, time)
-
-    for l in &logins {
-        if cur_actor != Some(l.actor_id.as_str()) {
-            cur_actor = Some(l.actor_id.as_str());
-            last = None;
-        }
-        let Some(point) = geo(&l.source_ip) else {
+    for t in &transitions {
+        let from = geo(&t.prev_ip);
+        let to = geo(&t.source_ip);
+        let (Some(from_point), Some(to_point)) = (from, to) else {
             continue;
         };
-        if let Some((prev_ip, prev_point, prev_time)) = &last {
-            if *prev_ip != l.source_ip {
-                let km = haversine_km(prev_point, &point);
-                let hours = (l.event_time - *prev_time).num_seconds().max(1) as f64 / 3600.0;
-                let kmh = km / hours;
-                if kmh > siem.impossible_travel_kmh && km > 100.0 {
-                    pairs.push(TravelPair {
-                        actor_id: l.actor_id.clone(),
-                        from_ip: prev_ip.clone(),
-                        to_ip: l.source_ip.clone(),
-                        from_loc: prev_point.label.clone(),
-                        to_loc: point.label.clone(),
-                        km,
-                        hours,
-                        kmh,
-                        at: l.event_time,
-                    });
-                }
-            }
+        let km = haversine_km(&from_point, &to_point);
+        let hours = (t.event_time - t.prev_time).num_seconds().max(1) as f64 / 3600.0;
+        let kmh = km / hours;
+        if kmh > siem.impossible_travel_kmh && km > 100.0 {
+            pairs.push(TravelPair {
+                actor_id: t.actor_id.clone(),
+                from_ip: t.prev_ip.clone(),
+                to_ip: t.source_ip.clone(),
+                from_loc: from_point.label.clone(),
+                to_loc: to_point.label.clone(),
+                km,
+                hours,
+                kmh,
+                at: t.event_time,
+            });
         }
-        last = Some((l.source_ip.clone(), point, l.event_time));
     }
 
     let mut touched = 0usize;

@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -257,6 +258,8 @@ async fn query_handler(State(pool): State<DbPool>, Query(params): Query<QueryPar
     }
 }
 
+const EXPORT_FETCH_BATCH: i64 = 2_000;
+
 async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryParams>) -> Response {
     let compiled = match compile_params(&params) {
         Ok(c) => c,
@@ -274,83 +277,122 @@ async fn export_handler(State(pool): State<DbPool>, Query(params): Query<QueryPa
         op = "query.export",
         db.statement = tracing::field::Empty
     );
-    let res = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+
+    // Bounded channel → response body. A few batches in flight is enough to keep
+    // the socket fed while back-pressuring the producer when the client is slow.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+
+    tokio::task::spawn_blocking(move || {
         let _g = span.enter();
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
-        let Compiled { where_sql, binds } = compiled;
+        if let Err(e) = stream_export(&pool, compiled, &order_sql, &span, &tx) {
+            // Best-effort: surface the failure mid-stream (truncates the CSV).
+            let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+        }
+    });
 
-        let rows_sql = format!(
-            "SELECT {cols} FROM ssumgmt_events WHERE {where_sql} ORDER BY {order_sql}",
-            cols = SELECT_COLS
-        );
-        span.record("db.statement", rows_sql.as_str());
-        let rows: Vec<SsuMgmtEvent> =
-            apply_binds(diesel::sql_query(rows_sql).into_boxed::<Pg>(), binds)
-                .load(&mut conn)
-                .map_err(|e| e.to_string())?;
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
 
-        let mut wtr = csv::Writer::from_writer(vec![]);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"ssumgmt_events.csv\""),
+    );
+    (StatusCode::OK, headers, Body::from_stream(stream)).into_response()
+}
+
+/// CSV header, written once before the first data batch.
+const EXPORT_HEADER: [&str; 14] = [
+    "source",
+    "uid",
+    "ts",
+    "actor",
+    "action",
+    "resource",
+    "source_ip",
+    "level",
+    "status",
+    "role",
+    "identity_source",
+    "account_id",
+    "caller_account_id",
+    "raw",
+];
+
+/// Encode a slice of rows to a fresh CSV buffer (no header).
+fn encode_rows(rows: Vec<SsuMgmtEvent>) -> anyhow::Result<Vec<u8>> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    for r in rows {
+        let raw = r.raw.as_ref().map(|v| v.to_string()).unwrap_or_default();
         wtr.write_record([
-            "source",
-            "uid",
-            "ts",
-            "actor",
-            "action",
-            "resource",
-            "source_ip",
-            "level",
-            "status",
-            "role",
-            "identity_source",
-            "account_id",
-            "caller_account_id",
-            "raw",
-        ])
-        .map_err(|e| e.to_string())?;
-
-        for r in rows {
-            let raw = r.raw.as_ref().map(|v| v.to_string()).unwrap_or_default();
-            wtr.write_record([
-                r.source,
-                r.uid,
-                r.ts.to_rfc3339(),
-                r.actor.unwrap_or_default(),
-                r.action,
-                r.resource.unwrap_or_default(),
-                r.source_ip.unwrap_or_default(),
-                r.level,
-                r.status,
-                r.role.unwrap_or_default(),
-                r.identity_source.unwrap_or_default(),
-                r.account_id.unwrap_or_default(),
-                r.caller_account_id.unwrap_or_default(),
-                raw,
-            ])
-            .map_err(|e| e.to_string())?;
-        }
-
-        wtr.into_inner().map_err(|e| e.to_string())
-    })
-    .await;
-
-    match res {
-        Ok(Ok(bytes)) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/csv; charset=utf-8"),
-            );
-            headers.insert(
-                header::CONTENT_DISPOSITION,
-                HeaderValue::from_static("attachment; filename=\"ssumgmt_events.csv\""),
-            );
-            (StatusCode::OK, headers, bytes).into_response()
-        }
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task join error: {}", e),
-        )
-            .into_response(),
+            r.source,
+            r.uid,
+            r.ts.to_rfc3339(),
+            r.actor.unwrap_or_default(),
+            r.action,
+            r.resource.unwrap_or_default(),
+            r.source_ip.unwrap_or_default(),
+            r.level,
+            r.status,
+            r.role.unwrap_or_default(),
+            r.identity_source.unwrap_or_default(),
+            r.account_id.unwrap_or_default(),
+            r.caller_account_id.unwrap_or_default(),
+            raw,
+        ])?;
     }
+    Ok(wtr.into_inner()?)
+}
+
+/// Drive the server-side cursor and push CSV chunks to `tx`. Runs on a blocking
+/// thread; `blocking_send` returning `Err` means the client disconnected, which
+/// ends the export cleanly (the transaction rolls back / the cursor is dropped).
+fn stream_export(
+    pool: &DbPool,
+    compiled: Compiled,
+    order_sql: &str,
+    span: &tracing::Span,
+    tx: &tokio::sync::mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
+) -> anyhow::Result<()> {
+    let Compiled { where_sql, binds } = compiled;
+    let rows_sql = format!(
+        "SELECT {cols} FROM ssumgmt_events WHERE {where_sql} ORDER BY {order_sql}",
+        cols = SELECT_COLS
+    );
+    span.record("db.statement", rows_sql.as_str());
+
+    let mut conn = pool.get()?;
+
+    // Header first; if the client is already gone, stop.
+    let mut hdr = csv::Writer::from_writer(Vec::new());
+    hdr.write_record(EXPORT_HEADER)?;
+    if tx.blocking_send(Ok(hdr.into_inner()?)).is_err() {
+        return Ok(());
+    }
+
+    conn.transaction::<_, anyhow::Error, _>(|conn| {
+        let declare_sql = format!("DECLARE ssu_export_cur NO SCROLL CURSOR FOR {}", rows_sql);
+        apply_binds(diesel::sql_query(declare_sql).into_boxed::<Pg>(), binds).execute(conn)?;
+
+        let fetch_sql = format!("FETCH FORWARD {} FROM ssu_export_cur", EXPORT_FETCH_BATCH);
+        loop {
+            let batch: Vec<SsuMgmtEvent> = diesel::sql_query(&fetch_sql).load(conn)?;
+            if batch.is_empty() {
+                break;
+            }
+            let bytes = encode_rows(batch)?;
+            if tx.blocking_send(Ok(bytes)).is_err() {
+                // Client disconnected — abandon the export.
+                break;
+            }
+        }
+
+        diesel::sql_query("CLOSE ssu_export_cur").execute(conn)?;
+        Ok(())
+    })
 }
