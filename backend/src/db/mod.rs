@@ -105,16 +105,57 @@ pub fn conn(
     })
 }
 
+const MIGRATION_LOCK_KEY: i64 = 4242424242;
+
 pub fn init(conf: &Config) -> Result<(), Error> {
-    let mut conn = get_db_conn(conf).unwrap();
+    let mut conn = get_db_conn(conf).map_err(|e| Error::DbError(Box::new(e)))?;
 
-    let res = conn.run_pending_migrations(MIGRATIONS);
+    acquire_migration_lock(&mut conn)?;
 
-    if let Err(err) = res {
-        error!("DB migrations failed :: {:?}", err);
-        return Err(Error::DbError(err));
+    let outcome = match conn.run_pending_migrations(MIGRATIONS) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            error!("DB migrations failed :: {:?}", err);
+            Err(Error::DbError(err))
+        }
+    };
+
+    let _ = diesel::sql_query("SELECT pg_advisory_unlock($1)")
+        .bind::<diesel::sql_types::BigInt, _>(MIGRATION_LOCK_KEY)
+        .execute(&mut conn);
+
+    if outcome.is_ok() {
+        info!("Connected to database");
+    }
+    outcome
+}
+
+fn acquire_migration_lock(conn: &mut PgConnection) -> Result<(), Error> {
+    #[derive(diesel::QueryableByName)]
+    struct Locked {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        locked: bool,
     }
 
-    info!("Connected to database");
-    Ok(())
+    const MAX_ATTEMPTS: u32 = 60;
+    let retry = std::time::Duration::from_secs(5);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let row: Locked = diesel::sql_query("SELECT pg_try_advisory_lock($1) AS locked")
+            .bind::<diesel::sql_types::BigInt, _>(MIGRATION_LOCK_KEY)
+            .get_result(conn)
+            .map_err(|e| Error::DbError(Box::new(e)))?;
+        if row.locked {
+            return Ok(());
+        }
+        info!(
+            "another replica holds the migration lock; waiting ({attempt}/{MAX_ATTEMPTS})"
+        );
+        std::thread::sleep(retry);
+    }
+
+    Err(Error::DbError(Box::new(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "timed out waiting for the migration advisory lock",
+    ))))
 }
