@@ -311,13 +311,25 @@ async fn sources_handler(State(pool): State<DbPool>) -> Response {
     let res = tokio::task::spawn_blocking(move || -> diesel::QueryResult<Vec<SourceRow>> {
         let _g = span.enter();
         let mut conn = crate::db::conn(&pool)?;
-        let since = Utc::now() - Duration::days(7);
-        let sources_sql = "SELECT source, count(*) AS total, count(*) FILTER (WHERE status = 'failure') AS failures \
-             FROM ssumgmt_events WHERE ts >= $1 GROUP BY source ORDER BY total DESC";
+        let sources_sql = "WITH totals AS ( \
+                 SELECT source, sum(count)::bigint AS total \
+                 FROM event_timeline_hourly \
+                 WHERE bucket >= now() - interval '7 days' \
+                 GROUP BY source \
+             ), fails AS ( \
+                 SELECT 'cloudtrail'::text AS source, \
+                        (SELECT count(*) FROM cloudtrail_events \
+                           WHERE error_code IS NOT NULL AND event_time >= now() - interval '7 days')::bigint AS failures \
+                 UNION ALL \
+                 SELECT 'ssu-mgmt'::text, \
+                        (SELECT count(*) FROM ssumgmt_audit \
+                           WHERE status = 'failure' AND ts >= now() - interval '7 days')::bigint \
+             ) \
+             SELECT t.source, t.total, COALESCE(f.failures, 0)::bigint AS failures \
+             FROM totals t LEFT JOIN fails f USING (source) \
+             ORDER BY t.total DESC";
         span.record("db.statement", sources_sql);
-        diesel::sql_query(sources_sql)
-        .bind::<Timestamptz, _>(since)
-        .load(&mut conn)
+        diesel::sql_query(sources_sql).load(&mut conn)
     })
     .await;
 

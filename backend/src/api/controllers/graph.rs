@@ -153,21 +153,31 @@ async fn graph_handler(State(pool): State<DbPool>, Query(params): Query<GraphPar
             // surface (default): top actors by risk then activity ↔ sources.
             _ => {
                 let sql = "WITH top_actors AS ( \
-                    SELECT aa.actor_id AS actor_id, count(*) AS activity \
-                    FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
-                    WHERE e.ts >= $1 GROUP BY aa.actor_id \
+                    SELECT aa.actor_id AS actor_id, sum(c.n) AS activity \
+                    FROM actor_daily_counts c JOIN actor_aliases aa ON aa.alias = c.actor \
+                    WHERE c.day >= (now() - interval '7 days')::date \
+                    GROUP BY aa.actor_id \
                  ), chosen AS ( \
                     SELECT ta.actor_id FROM top_actors ta LEFT JOIN risk_scores r ON r.actor_id = ta.actor_id \
                     ORDER BY COALESCE(r.score, 0) DESC, ta.activity DESC LIMIT 40 \
                  ) \
-                 SELECT aa.actor_id AS actor_id, e.source AS source, count(*) AS weight, \
-                        count(*) FILTER (WHERE e.status = 'failure') AS failures \
-                 FROM ssumgmt_events e JOIN actor_aliases aa ON aa.alias = e.actor \
-                 JOIN chosen c ON c.actor_id = aa.actor_id \
-                 WHERE e.ts >= $1 \
+                 SELECT aa.actor_id AS actor_id, e.source AS source, \
+                        sum(e.cnt)::bigint AS weight, \
+                        sum(e.fails)::bigint AS failures \
+                 FROM chosen c \
+                 JOIN actor_aliases aa ON aa.actor_id = c.actor_id \
+                 CROSS JOIN LATERAL ( \
+                     SELECT ev.source AS source, \
+                            count(*) AS cnt, \
+                            count(*) FILTER (WHERE ev.status = 'failure') AS fails \
+                     FROM ssumgmt_events ev \
+                     WHERE ev.actor = aa.alias AND ev.ts >= now() - interval '7 days' \
+                     GROUP BY ev.source \
+                     OFFSET 0 \
+                 ) e \
                  GROUP BY aa.actor_id, e.source";
                 q("graph.edges", sql)
-                    .in_scope(|| diesel::sql_query(sql).bind::<Timestamptz, _>(floor).load(&mut conn))?
+                    .in_scope(|| diesel::sql_query(sql).load(&mut conn))?
             }
         };
 
