@@ -13,6 +13,7 @@ import {
 import { ForbiddenError } from '../api';
 import { sourceColor, statusColor, formatDateTime, riskColor, relAge, originColor, originLabel } from '../ssumgmt/format';
 import ConsoleTable from '../components/ConsoleTable.vue';
+import CacheBadge from '../components/CacheBadge.vue';
 import { ACTIVITY_COLUMNS } from '../ssumgmt/queryColumns';
 import { type ConsoleColumn, rawPathAccessor } from '../ssumgmt/tableColumns';
 import { useCustomColumns } from '../composables/useCustomColumns';
@@ -253,7 +254,7 @@ function bar(v: number, max: number, width = 16): string {
               <span style="color:var(--t-faint)">team</span><span>{{ detail.identity.team ?? '—' }}</span>
               <span style="color:var(--t-faint)">sources</span><span>{{ (detail.identity.sources.filter(Boolean) as string[]).join(', ') || '—' }}</span>
               <template v-if="detail.identity_context.sources.length">
-                <span style="color:var(--t-faint)">identity src</span><span class="term-break" style="color:var(--t-text)">{{ detail.identity_context.sources.join(', ') }}</span>
+                <span style="color:var(--t-faint)">identity src<CacheBadge kind="identity_context" /></span><span class="term-break" style="color:var(--t-text)">{{ detail.identity_context.sources.join(', ') }}</span>
               </template>
               <template v-if="detail.identity_context.roles.length">
                 <span style="color:var(--t-faint)">assumed roles</span>
@@ -263,13 +264,13 @@ function bar(v: number, max: number, width = 16): string {
                 </span>
               </template>
               <span style="color:var(--t-faint)">first seen</span><span>{{ detail.identity.first_seen ? formatDateTime(detail.identity.first_seen) : '—' }}</span>
-              <span style="color:var(--t-faint)">last active</span><span>{{ detail.identity.last_active ? relAge(detail.identity.last_active) : '—' }}</span>
+              <span style="color:var(--t-faint)">last active<CacheBadge kind="siem" /></span><span>{{ detail.identity.last_active ? relAge(detail.identity.last_active) : '—' }}</span>
             </div>
           </div>
 
           <!-- risk gauge -->
           <div style="background:var(--t-pane);padding:16px">
-            <div style="color:var(--t-faint);font-size:11px;letter-spacing:.06em">RISK</div>
+            <div style="color:var(--t-faint);font-size:11px;letter-spacing:.06em">RISK<CacheBadge kind="siem" /></div>
             <div style="display:flex;align-items:baseline;gap:10px;margin-top:4px">
               <span :style="{ fontSize: '40px', fontWeight: 700, color: riskColor(detail.risk?.score ?? 0) }">{{ detail.risk?.score ?? 0 }}</span>
               <span :style="{ fontSize: '12px', color: riskColor(detail.risk?.score ?? 0), textTransform: 'uppercase', letterSpacing: '.06em' }">{{ detail.risk?.label ?? 'low' }}</span>
@@ -289,13 +290,13 @@ function bar(v: number, max: number, width = 16): string {
         <!-- stat strip -->
         <div class="term-tilegrid" style="flex:none;display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--t-line)">
           <div v-for="s in [
-            { k: 'events/24h', v: detail.stats.events_24h },
-            { k: 'events/7d', v: detail.stats.events_7d },
-            { k: 'failed/7d', v: detail.stats.failed_7d },
-            { k: 'sessions', v: detail.stats.sessions },
-            { k: 'priv grants', v: detail.stats.privileged_grants },
+            { k: 'events/24h', v: detail.stats.events_24h, cls: 'entity_stats' as const },
+            { k: 'events/7d', v: detail.stats.events_7d, cls: 'entity_stats' as const },
+            { k: 'failed/7d', v: detail.stats.failed_7d, cls: 'entity_stats' as const },
+            { k: 'sessions', v: detail.stats.sessions, cls: 'siem' as const },
+            { k: 'priv grants', v: detail.stats.privileged_grants, cls: 'siem' as const },
           ]" :key="s.k" style="background:var(--t-pane);padding:10px 14px">
-            <div style="color:var(--t-faint);font-size:10.5px;letter-spacing:.04em">{{ s.k }}</div>
+            <div style="color:var(--t-faint);font-size:10.5px;letter-spacing:.04em">{{ s.k }}<CacheBadge :kind="s.cls" /></div>
             <div :style="{ fontSize: '22px', fontWeight: 700, marginTop: '2px', color: (s.k === 'failed/7d' || s.k === 'priv grants') && s.v > 0 ? 'var(--t-amber)' : 'var(--t-text)' }">{{ s.v }}</div>
           </div>
         </div>
@@ -303,7 +304,7 @@ function bar(v: number, max: number, width = 16): string {
         <!-- sessions + grants -->
         <div class="term-split" style="flex:none;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--t-line)">
           <div style="background:var(--t-pane)">
-            <div style="padding:8px 14px;border-bottom:1px solid var(--t-line);font-weight:600;letter-spacing:.08em;font-size:11.5px"><span style="color:var(--t-accent)">▌</span> SESSIONS</div>
+            <div style="padding:8px 14px;border-bottom:1px solid var(--t-line);font-weight:600;letter-spacing:.08em;font-size:11.5px"><span style="color:var(--t-accent)">▌</span> SESSIONS<CacheBadge kind="siem" /></div>
             <div style="overflow:auto;max-height:240px">
               <div v-for="s in detail.sessions" :key="s.id" style="display:flex;align-items:center;gap:8px;padding:5px 14px;border-bottom:1px solid var(--t-line);font-size:11.5px">
                 <span class="term-rowcell" :style="{ color: s.status === 'flagged' ? 'var(--t-red)' : s.status === 'active' ? 'var(--t-accent)' : 'var(--t-dim)', flex: 'none', width: '54px', fontSize: '10px' }">{{ s.status }}</span>
@@ -316,7 +317,7 @@ function bar(v: number, max: number, width = 16): string {
             </div>
           </div>
           <div style="background:var(--t-pane)">
-            <div style="padding:8px 14px;border-bottom:1px solid var(--t-line);font-weight:600;letter-spacing:.08em;font-size:11.5px"><span style="color:var(--t-amber)">▌</span> GRANTS</div>
+            <div style="padding:8px 14px;border-bottom:1px solid var(--t-line);font-weight:600;letter-spacing:.08em;font-size:11.5px"><span style="color:var(--t-amber)">▌</span> GRANTS<CacheBadge kind="siem" /></div>
             <div style="overflow:auto;max-height:240px">
               <div v-for="g in detail.grants" :key="g.id" style="display:flex;align-items:center;gap:8px;padding:5px 14px;border-bottom:1px solid var(--t-line);font-size:11.5px">
                 <span v-if="g.privileged" style="color:var(--t-red);flex:none;width:38px;font-size:9px;font-weight:700">PRIV</span>
@@ -333,7 +334,7 @@ function bar(v: number, max: number, width = 16): string {
         <!-- anomalies (statistical signals feeding this actor's risk) -->
         <div v-if="detail.anomalies.length" style="flex:none;background:var(--t-pane)">
           <div style="padding:8px 14px;border-bottom:1px solid var(--t-line);font-weight:600;letter-spacing:.08em;font-size:11.5px">
-            <span style="color:var(--t-amber)">◆</span> ANOMALIES
+            <span style="color:var(--t-amber)">◆</span> ANOMALIES<CacheBadge kind="siem" />
             <span style="color:var(--t-faint);font-weight:400;margin-left:8px">statistical · soft signal</span>
           </div>
           <div style="overflow:auto;max-height:200px">
@@ -349,7 +350,7 @@ function bar(v: number, max: number, width = 16): string {
         <div style="flex:1 1 0;min-height:300px;min-width:0;display:flex;flex-direction:column;background:var(--t-pane)">
           <div class="term-toolbar" style="display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--t-line);font-size:11.5px;flex:none">
             <span style="font-weight:600;letter-spacing:.08em"><span style="color:var(--t-accent)">▌</span> ACTIVITY</span>
-            <span style="color:var(--t-faint)">{{ actPageStart }}–{{ actPageEnd }} of {{ activityTotal.toLocaleString() }}</span>
+            <span style="color:var(--t-faint)">{{ actPageStart }}–{{ actPageEnd }} of {{ activityTotal.toLocaleString() }}<CacheBadge kind="entity_stats" /></span>
             <span style="flex:1"></span>
             <template v-if="activityTotal > ACTIVITY_PAGE">
               <button

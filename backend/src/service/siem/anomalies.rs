@@ -11,9 +11,9 @@ use crate::service::ingest::get_watermark;
 const FIRST_SEEN_WATERMARK_SOURCE: &str = "siem_first_seen";
 const FIRST_SEEN_WATERMARK_LAG_MINS: i64 = 5;
 const DAILY_COUNTS_WATERMARK_SOURCE: &str = "siem_daily_counts";
-const DAILY_COUNTS_SAFETY_MARGIN_MINS: i64 = 15;
+pub const DAILY_COUNTS_SAFETY_MARGIN_MINS: i64 = 15;
 const IDENTITY_CONTEXT_WATERMARK_SOURCE: &str = "siem_identity_context";
-const IDENTITY_CONTEXT_WATERMARK_LAG_MINS: i64 = 5;
+pub const IDENTITY_CONTEXT_WATERMARK_LAG_MINS: i64 = 5;
 const DETECTOR_STATEMENT_TIMEOUT: &str = "60s";
 const MAX_HARVEST_STEP_HOURS: i64 = 3;
 

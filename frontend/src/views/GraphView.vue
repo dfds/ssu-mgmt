@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { fetchGraph, type GraphResult, type GraphNode } from '../ssumgmt/api';
 import { ForbiddenError } from '../api';
 import { sourceColor, riskColor } from '../ssumgmt/format';
+import CacheBadge from '../components/CacheBadge.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -129,7 +130,7 @@ function applyActor(): void {
     <!-- controls -->
     <div class="term-toolbar" style="display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--t-line);flex:none">
       <span style="color:var(--t-accent)">▌</span>
-      <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">GRAPH</span>
+      <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">GRAPH<CacheBadge kind="siem" /></span>
       <div style="display:flex;gap:1px;background:var(--t-line);border:1px solid var(--t-line2)">
         <button
           v-for="m in (['surface','investigate','entity'] as Mode[])"

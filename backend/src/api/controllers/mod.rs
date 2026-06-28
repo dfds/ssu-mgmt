@@ -3,6 +3,7 @@ mod alerts;
 pub mod auth_config;
 mod entity;
 mod graph;
+mod meta;
 mod overview;
 pub mod progress;
 mod query;
@@ -32,6 +33,9 @@ pub fn add_controllers(mut router: Router, state: WebSharedState) -> Router {
 
     let actors_routes = actors::routes(state.db_pool.clone()).layer(role_layer());
     router = router.nest("/actors", actors_routes);
+
+    let meta_routes = meta::routes().layer(role_layer());
+    router = router.nest("/meta", meta_routes);
 
     router
 }

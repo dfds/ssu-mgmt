@@ -21,6 +21,7 @@ import { useConsoleStream } from '../ssumgmt/useConsoleStream';
 import { useAlertsFeed, ALERT_FILTERS } from '../ssumgmt/useAlertsFeed';
 import { useIsMobile } from '../composables/useIsMobile';
 import AlertDetailModal from '../ssumgmt/AlertDetailModal.vue';
+import CacheBadge from '../components/CacheBadge.vue';
 
 const isMobile = useIsMobile();
 
@@ -46,6 +47,12 @@ const WINDOW_STORE_KEY = 'ssumgmt.overview.window';
 const windowKey = ref(localStorage.getItem(WINDOW_STORE_KEY) ?? '24h');
 const activeWindow = computed(() => WINDOWS.find((w) => w.key === windowKey.value) ?? WINDOWS[0]);
 const bucketShort = computed(() => (activeWindow.value.bucket === 'day' ? 'd' : 'h'));
+// The timeline is served from the hourly/daily rollup matviews for day buckets and
+// for hour windows wider than the backend's 48h ROLLUP_HOUR_THRESHOLD (i.e. 7d+);
+// the 24h window counts live. Mirror that so the cached badge only shows when stale.
+const timelineCached = computed(
+  () => activeWindow.value.bucket === 'day' || activeWindow.value.ms > 48 * 3_600_000,
+);
 const timelineLoading = ref(false);
 
 const nowTick = ref(Date.now());
@@ -357,7 +364,7 @@ function onKey(e: KeyboardEvent): void {
           <div style="color:var(--t-dim);font-size:11.5px;margin-top:7px">IAM user/login removals</div>
         </div>
         <div style="background:var(--t-pane);padding:12px 16px">
-          <div style="color:var(--t-faint);font-size:11px;letter-spacing:.04em">guardduty</div>
+          <div style="color:var(--t-faint);font-size:11px;letter-spacing:.04em">guardduty<CacheBadge kind="guardduty" /></div>
           <div
             :style="{ color: kpis?.guardduty === null ? 'var(--t-faint)' : 'var(--t-red)', fontSize: '30px', fontWeight: 700, marginTop: '4px' }"
           >{{ loading ? '·' : guarddutyLabel }}</div>
@@ -370,7 +377,7 @@ function onKey(e: KeyboardEvent): void {
           :title="anomalies.length ? 'view anomalies' : ''"
           @click="anomalies.length && openAnomalies()"
         >
-          <div style="color:var(--t-faint);font-size:11px;letter-spacing:.04em">anomalies/24h</div>
+          <div style="color:var(--t-faint);font-size:11px;letter-spacing:.04em">anomalies/24h<CacheBadge kind="siem" /></div>
           <div
             :style="{ color: (kpis?.anomalies ?? 0) > 0 ? 'var(--t-amber)' : 'var(--t-accent)', fontSize: '30px', fontWeight: 700, marginTop: '4px' }"
           >{{ loading ? '·' : (kpis?.anomalies ?? 0) }}</div>
@@ -384,7 +391,7 @@ function onKey(e: KeyboardEvent): void {
       <div style="background:var(--t-pane)">
         <div class="term-toolbar" style="display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--t-line)">
           <span style="color:var(--t-accent)">▌</span>
-          <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">EVENT&nbsp;TIMELINE</span>
+          <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">EVENT&nbsp;TIMELINE<CacheBadge v-if="timelineCached" kind="timeline" /></span>
           <span style="color:var(--t-faint);font-size:11px">by {{ activeWindow.bucket }} · {{ activeWindow.label }}</span>
           <span style="flex:1"></span>
           <span v-if="anomalies.length" style="color:var(--t-amber);font-size:11px">◆ anomaly</span>
@@ -453,7 +460,7 @@ function onKey(e: KeyboardEvent): void {
         <div style="background:var(--t-pane);display:flex;flex-direction:column;min-height:0">
           <div class="term-toolbar" style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--t-line);flex:none">
             <span style="color:var(--t-red)">▌</span>
-            <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">ALERTS</span>
+            <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">ALERTS<CacheBadge kind="siem" /></span>
             <span class="term-btngroup" style="display:flex;gap:3px">
               <button
                 v-for="f in ALERT_FILTERS"
@@ -560,7 +567,7 @@ function onKey(e: KeyboardEvent): void {
           <div style="background:var(--t-pane)">
             <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--t-line)">
               <span style="color:var(--t-accent)">▌</span>
-              <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">SOURCES</span>
+              <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">SOURCES<CacheBadge kind="timeline" /></span>
               <span style="flex:1"></span>
               <span style="color:var(--t-faint);font-size:11px">ingest · events/{{ activeWindow.label }}</span>
             </div>
@@ -604,7 +611,7 @@ function onKey(e: KeyboardEvent): void {
           <div style="background:var(--t-pane);display:flex;flex-direction:column;min-height:0">
             <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--t-line);flex:none">
               <span style="color:var(--t-amber)">▌</span>
-              <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">TOP&nbsp;ACTORS · RISK</span>
+              <span style="font-weight:600;letter-spacing:.08em;font-size:11.5px">TOP&nbsp;ACTORS · RISK<CacheBadge kind="siem" /></span>
               <span style="flex:1"></span>
               <span style="color:var(--t-faint);font-size:11px">{{ kpis?.actors_tracked ?? 0 }} tracked</span>
             </div>

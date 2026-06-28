@@ -1023,3 +1023,36 @@ export function unackAlert(id: number): Promise<void> {
 export function unresolveAlert(id: number): Promise<void> {
   return postTriage(`/api/alerts/${id}/unresolve`);
 }
+
+export type CacheClass = 'siem' | 'entity_stats' | 'identity_context' | 'timeline' | 'guardduty';
+
+export interface CacheClassMeta {
+  /** How often the backing cache/derived table is recomputed. */
+  refresh_secs: number;
+  /** Worst-case lag behind live (refresh cadence + any watermark margin). */
+  max_stale_secs: number;
+}
+
+export interface CacheMeta {
+  siem_interval_secs: number;
+  timeline_rollup_secs: number;
+  guardduty_interval_secs: number;
+  caches: Record<CacheClass, CacheClassMeta>;
+}
+
+let cacheMetaPromise: Promise<CacheMeta> | null = null;
+
+/** Fetch the cache-cadence metadata once and share it across all badges. */
+export function fetchCacheMeta(): Promise<CacheMeta> {
+  if (!cacheMetaPromise) {
+    cacheMetaPromise = (async () => {
+      const res = await apiFetch('/api/meta');
+      return (await res.json()) as CacheMeta;
+    })().catch((e) => {
+      // Don't cache a failure — let the next badge retry.
+      cacheMetaPromise = null;
+      throw e;
+    });
+  }
+  return cacheMetaPromise;
+}
