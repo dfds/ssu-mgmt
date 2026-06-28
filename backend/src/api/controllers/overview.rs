@@ -56,21 +56,19 @@ struct KpiRow {
 /// `guardduty` is `null` ("no data") unless the GuardDuty ingester has run
 /// cleanly — never a fabricated zero.
 pub(crate) fn load_kpis(conn: &mut PgConnection) -> anyhow::Result<serde_json::Value> {
-    let since = Utc::now() - Duration::hours(24);
     let k: KpiRow = diesel::sql_query(
         "SELECT \
-           (  (SELECT count(*) FROM cloudtrail_events WHERE error_code IS NOT NULL AND event_time >= $1) \
-            + (SELECT count(*) FROM ssumgmt_audit WHERE status = 'failure' AND ts >= $1)) AS failed_auth_24h, \
-           (SELECT count(*) FROM cloudtrail_events WHERE event_name IN ('DeleteUser','DeleteLoginProfile','DeactivateMFADevice') AND event_time >= $1) AS deactivated_24h, \
+           (  (SELECT count(*) FROM cloudtrail_events WHERE error_code IS NOT NULL AND event_time >= now() - interval '24 hours') \
+            + (SELECT count(*) FROM ssumgmt_audit WHERE status = 'failure' AND ts >= now() - interval '24 hours')) AS failed_auth_24h, \
+           (SELECT count(*) FROM cloudtrail_events WHERE event_name IN ('DeleteUser','DeleteLoginProfile','DeactivateMFADevice') AND event_time >= now() - interval '24 hours') AS deactivated_24h, \
            (SELECT count(*) FROM alerts WHERE status IN ('open','acked') AND severity = 'critical') AS critical_alerts, \
            (SELECT count(*) FROM alerts WHERE status = 'open') AS open_alerts, \
            (SELECT count(*) FROM actors) AS actors_tracked, \
            (SELECT count(*) FROM risk_scores WHERE score >= 60) AS high_risk_actors, \
            (SELECT count(*) FROM sessions WHERE status = 'active') AS active_sessions, \
            (SELECT count(*) FROM alerts WHERE source = 'guardduty' AND status IN ('open','acked')) AS guardduty_open, \
-           (SELECT count(*) FROM anomalies WHERE event_time >= $1) AS anomalies_24h",
+           (SELECT count(*) FROM anomalies WHERE event_time >= now() - interval '24 hours') AS anomalies_24h",
     )
-    .bind::<Timestamptz, _>(since)
     .get_result(conn)?;
 
     let gd_available: i64 = diesel::sql_query(

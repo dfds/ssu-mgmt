@@ -102,6 +102,15 @@ async fn sweep(cancel: &CancellationToken, conf: &RetentionConfig, pool: &DbPool
                   ) c WHERE t.ctid = c.ctid",
             days: conf.derived_days,
         },
+        PruneTarget {
+            label: "actor_identity_context",
+            sql: "DELETE FROM actor_identity_context AS t USING ( \
+                    SELECT ctid FROM actor_identity_context \
+                    WHERE last_ts < now() - make_interval(days => $1::int) \
+                    ORDER BY last_ts LIMIT $2 \
+                  ) c WHERE t.ctid = c.ctid",
+            days: conf.derived_days,
+        },
     ];
 
     for target in targets {

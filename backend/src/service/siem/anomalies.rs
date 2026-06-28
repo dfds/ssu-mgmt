@@ -12,6 +12,8 @@ const FIRST_SEEN_WATERMARK_SOURCE: &str = "siem_first_seen";
 const FIRST_SEEN_WATERMARK_LAG_MINS: i64 = 5;
 const DAILY_COUNTS_WATERMARK_SOURCE: &str = "siem_daily_counts";
 const DAILY_COUNTS_SAFETY_MARGIN_MINS: i64 = 15;
+const IDENTITY_CONTEXT_WATERMARK_SOURCE: &str = "siem_identity_context";
+const IDENTITY_CONTEXT_WATERMARK_LAG_MINS: i64 = 5;
 const DETECTOR_STATEMENT_TIMEOUT: &str = "60s";
 const MAX_HARVEST_STEP_HOURS: i64 = 3;
 
@@ -30,6 +32,7 @@ pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usiz
 
     maintain_first_seen(conn).context("maintain first-seen cache")?;
     maintain_daily_counts(conn).context("maintain daily-counts cache")?;
+    maintain_identity_context(conn).context("maintain identity-context cache")?;
 
     let mut touched = 0usize;
     touched += run_detector(conn, "volume_spike", |c| {
@@ -369,6 +372,71 @@ fn maintain_daily_counts(conn: &mut PgConnection) -> anyhow::Result<()> {
         .bind::<Timestamptz, _>(boundary)
         .execute(conn)
         .context("advance daily-counts watermark")?;
+
+        Ok(())
+    })
+}
+
+fn maintain_identity_context(conn: &mut PgConnection) -> anyhow::Result<()> {
+    conn.transaction::<(), anyhow::Error, _>(|conn| {
+        set_txn_guards(conn)?;
+
+        #[derive(QueryableByName)]
+        struct Snap {
+            #[diesel(sql_type = Nullable<Timestamptz>)]
+            w: Option<DateTime<Utc>>,
+        }
+        let target = diesel::sql_query(
+            "SELECT (SELECT max(created_at) FROM cloudtrail_events) - ($1 || ' minutes')::interval AS w",
+        )
+        .bind::<Text, _>(IDENTITY_CONTEXT_WATERMARK_LAG_MINS.to_string())
+        .get_result::<Snap>(conn)
+        .context("snapshot identity-context watermark")?
+        .w;
+        let Some(target) = target else {
+            return Ok(());
+        };
+
+        let w = get_watermark(conn, IDENTITY_CONTEXT_WATERMARK_SOURCE)
+            .context("read identity-context watermark")?
+            .and_then(|wm| wm.last_event_at)
+            .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch"));
+
+        // Bound the harvest to one step so a backlog drains in <60s increments.
+        // The cache is idempotent (GREATEST), so the boundary only governs
+        // forward progress, not correctness.
+        let boundary = target.min(w + Duration::hours(MAX_HARVEST_STEP_HOURS));
+
+        diesel::sql_query(
+            "INSERT INTO actor_identity_context (actor, identity_source, assumed_role_arn, last_ts) \
+             SELECT COALESCE(principal_name, principal_arn), \
+                    COALESCE(identity_source, ''), COALESCE(assumed_role_arn, ''), max(event_time) \
+               FROM cloudtrail_events \
+              WHERE created_at > $1 AND created_at <= $2 \
+                AND COALESCE(principal_name, principal_arn) IS NOT NULL \
+                AND (identity_source IS NOT NULL OR assumed_role_arn IS NOT NULL) \
+              GROUP BY 1, 2, 3 \
+             ON CONFLICT (actor, identity_source, assumed_role_arn) DO UPDATE SET \
+               last_ts = GREATEST(actor_identity_context.last_ts, EXCLUDED.last_ts), \
+               updated_at = now()",
+        )
+        .bind::<Timestamptz, _>(w)
+        .bind::<Timestamptz, _>(boundary)
+        .execute(conn)
+        .context("harvest identity-context cache")?;
+
+        diesel::sql_query(
+            "INSERT INTO ingest_watermarks \
+               (source, last_event_at, last_run_at, objects_scanned, events_applied) \
+             VALUES ($1, $2, now(), 0, 0) \
+             ON CONFLICT (source) DO UPDATE SET \
+               last_event_at = GREATEST(EXCLUDED.last_event_at, ingest_watermarks.last_event_at), \
+               last_run_at   = now()",
+        )
+        .bind::<Text, _>(IDENTITY_CONTEXT_WATERMARK_SOURCE)
+        .bind::<Timestamptz, _>(boundary)
+        .execute(conn)
+        .context("advance identity-context watermark")?;
 
         Ok(())
     })

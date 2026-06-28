@@ -18,6 +18,7 @@ filter = { except_tables = [
     "webidentity_session_subjects",
     "actor_source_first_seen",
     "actor_daily_counts",
+    "actor_identity_context",
 ] }
 
 [migrations_directory]

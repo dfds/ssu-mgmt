@@ -165,17 +165,16 @@ async fn entity_handler(State(pool): State<DbPool>, Path(id): Path<String>) -> R
                   WHERE aa.actor_id = $1)::bigint AS activity_total";
         let stats: StatsRow = q("entity.stats", stats_sql)
             .in_scope(|| diesel::sql_query(stats_sql).bind::<Text, _>(&id).get_result(&mut conn))?;
+        
 
         let ctx_sql =
-            "SELECT DISTINCT s.identity_source AS identity_source, s.assumed_role_arn AS assumed_role_arn \
-             FROM actor_aliases aa CROSS JOIN LATERAL ( \
-                 SELECT c.identity_source, c.assumed_role_arn \
-                 FROM cloudtrail_events c \
-                 WHERE COALESCE(c.principal_name, c.principal_arn) = aa.alias \
-                   AND (c.identity_source IS NOT NULL OR c.assumed_role_arn IS NOT NULL) \
-                 ORDER BY c.event_time DESC LIMIT 5000 \
-             ) s \
-             WHERE aa.actor_id = $1 LIMIT 200";
+            "SELECT identity_source, assumed_role_arn FROM ( \
+                 SELECT c.identity_source AS identity_source, c.assumed_role_arn AS assumed_role_arn, \
+                        max(c.last_ts) AS last_ts \
+                 FROM actor_identity_context c JOIN actor_aliases aa ON aa.alias = c.actor \
+                 WHERE aa.actor_id = $1 \
+                 GROUP BY c.identity_source, c.assumed_role_arn \
+             ) z ORDER BY last_ts DESC LIMIT 200";
         let ctx_rows: Vec<IdentityContextRow> = q("entity.identity_context", ctx_sql)
             .in_scope(|| diesel::sql_query(ctx_sql).bind::<Text, _>(&id).load(&mut conn))?;
         let mut id_sources: Vec<String> = Vec::new();
