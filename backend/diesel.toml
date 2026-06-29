@@ -19,6 +19,7 @@ filter = { except_tables = [
     "actor_source_first_seen",
     "actor_daily_counts",
     "actor_identity_context",
+    "event_timeline_hourly",
 ] }
 
 [migrations_directory]

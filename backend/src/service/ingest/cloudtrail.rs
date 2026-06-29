@@ -950,14 +950,18 @@ impl<'a, 'b, 'de> serde::de::Visitor<'de> for RecordsSeq<'a, 'b> {
                 if buf.len() >= self.flush_records {
                     if let Err(e) = flush_batch(self.pool, &mut buf, &mut *self.acc) {
                         self.acc.db_err = Some(e);
-                        return Err(serde::de::Error::custom("cloudtrail sub-batch flush failed"));
+                        return Err(serde::de::Error::custom(
+                            "cloudtrail sub-batch flush failed",
+                        ));
                     }
                 }
             }
         }
         if let Err(e) = flush_batch(self.pool, &mut buf, &mut *self.acc) {
             self.acc.db_err = Some(e);
-            return Err(serde::de::Error::custom("cloudtrail sub-batch flush failed"));
+            return Err(serde::de::Error::custom(
+                "cloudtrail sub-batch flush failed",
+            ));
         }
         Ok(())
     }
@@ -1270,6 +1274,55 @@ fn oidc_host(provider_arn: &str) -> Option<String> {
 
 const BACKFILL_BATCH: i64 = 5000;
 
+/// Pause between backfill batches so a one-time historical backfill doesn't
+/// monopolise DB I/O. On a busy CloudTrail table an un-throttled backfill loop
+/// runs the DB flat-out, starving live ingest and the shared worker pool.
+const BACKFILL_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Completion markers persisted in `ingest_watermarks`. Each one-shot historical
+/// backfill is strictly for rows ingested *before* its feature existed (the live
+/// ingester writes these columns for new rows), so once a pass has run to
+/// completion it never has work again. Recording a marker lets us skip the pass
+/// entirely on subsequent starts/leadership changes — crucial because the
+/// opaque-session probe is an un-indexable `principal_arn LIKE 'arn:aws:sts::%'`
+/// **full seq scan**, and re-running it on every lease (re)acquire was a major
+/// driver of the DB I/O storm.
+const MARKER_IDENTITY: &str = "backfill_identity_v1";
+const MARKER_OPAQUE: &str = "backfill_opaque_sessions_v1";
+const MARKER_CALLER: &str = "backfill_caller_account_v1";
+
+/// True if the given backfill pass has already been recorded complete.
+async fn backfill_marker_present(pool: &DbPool, marker: &'static str) -> anyhow::Result<bool> {
+    let pool = pool.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let mut conn = pool.get().context("pool get")?;
+        Ok(crate::service::ingest::get_watermark(&mut conn, marker)
+            .context("read backfill marker")?
+            .is_some())
+    })
+    .await
+    .context("join")?
+}
+
+/// Record a backfill pass as complete so it's skipped on future starts.
+async fn set_backfill_marker(pool: &DbPool, marker: &'static str) -> anyhow::Result<()> {
+    let pool = pool.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut conn = pool.get().context("pool get")?;
+        diesel::sql_query(
+            "INSERT INTO ingest_watermarks (source, objects_scanned, events_applied, last_run_at) \
+             VALUES ($1, 0, 0, now()) \
+             ON CONFLICT (source) DO UPDATE SET last_run_at = now()",
+        )
+        .bind::<diesel::sql_types::Text, _>(marker)
+        .execute(&mut conn)
+        .context("set backfill marker")?;
+        Ok(())
+    })
+    .await
+    .context("join")?
+}
+
 #[derive(QueryableByName)]
 struct BackfillRow {
     #[diesel(sql_type = diesel::sql_types::Text)]
@@ -1326,7 +1379,11 @@ pub async fn backfill_identity(cancel: CancellationToken, pool: DbPool) {
 /// NULL behind it — guaranteeing forward progress and clean termination rather than
 /// reselecting the same batch forever. Cancellation-aware between batches.
 async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> anyhow::Result<i64> {
+    if backfill_marker_present(pool, MARKER_IDENTITY).await? {
+        return Ok(0);
+    }
     let mut total = 0i64;
+    let mut completed = false;
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1377,6 +1434,7 @@ async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> a
         .context("join")??;
 
         if updated == 0 {
+            completed = true;
             break;
         }
         total += updated;
@@ -1384,6 +1442,13 @@ async fn backfill_identity_inner(cancel: &CancellationToken, pool: &DbPool) -> a
             "cloudtrail backfill_identity: {} rows updated so far",
             total
         );
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(BACKFILL_THROTTLE) => {}
+        }
+    }
+    if completed {
+        set_backfill_marker(pool, MARKER_IDENTITY).await?;
     }
     Ok(total)
 }
@@ -1406,7 +1471,11 @@ async fn backfill_opaque_sessions_inner(
     cancel: &CancellationToken,
     pool: &DbPool,
 ) -> anyhow::Result<i64> {
+    if backfill_marker_present(pool, MARKER_OPAQUE).await? {
+        return Ok(0);
+    }
     let mut total = 0i64;
+    let mut completed = false;
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1442,6 +1511,7 @@ async fn backfill_opaque_sessions_inner(
         .context("join")??;
 
         if updated == 0 {
+            completed = true;
             break;
         }
         total += updated;
@@ -1449,6 +1519,13 @@ async fn backfill_opaque_sessions_inner(
             "cloudtrail backfill_identity: {} opaque-session rows normalized so far",
             total
         );
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(BACKFILL_THROTTLE) => {}
+        }
+    }
+    if completed {
+        set_backfill_marker(pool, MARKER_OPAQUE).await?;
     }
     Ok(total)
 }
@@ -1464,7 +1541,11 @@ async fn backfill_caller_account_inner(
     cancel: &CancellationToken,
     pool: &DbPool,
 ) -> anyhow::Result<i64> {
+    if backfill_marker_present(pool, MARKER_CALLER).await? {
+        return Ok(0);
+    }
     let mut total = 0i64;
+    let mut completed = false;
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1493,6 +1574,7 @@ async fn backfill_caller_account_inner(
         .context("join")??;
 
         if updated == 0 {
+            completed = true;
             break;
         }
         total += updated;
@@ -1500,6 +1582,13 @@ async fn backfill_caller_account_inner(
             "cloudtrail backfill_identity: {} caller-account rows populated so far",
             total
         );
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(BACKFILL_THROTTLE) => {}
+        }
+    }
+    if completed {
+        set_backfill_marker(pool, MARKER_CALLER).await?;
     }
     Ok(total)
 }

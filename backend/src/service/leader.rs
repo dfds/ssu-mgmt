@@ -26,17 +26,29 @@ fn holder_id() -> String {
     format!("{}-{}", host, std::process::id())
 }
 
-pub fn spawn(rt: Arc<Runtime>, conf: Config, pool: DbPool, global_cancel: CancellationToken) {
+pub fn spawn(
+    rt: Arc<Runtime>,
+    conf: Config,
+    worker_pool: DbPool,
+    leader_pool: DbPool,
+    global_cancel: CancellationToken,
+) {
     if !conf.worker.leader_election {
         info!("worker leader election disabled — spawning singleton workers directly");
-        spawn_singleton_workers(&rt, &conf, &pool, &global_cancel);
+        spawn_singleton_workers(&rt, &conf, &worker_pool, &global_cancel);
         return;
     }
 
-    std::thread::spawn(move || election_loop(rt, conf, pool, global_cancel));
+    std::thread::spawn(move || election_loop(rt, conf, worker_pool, leader_pool, global_cancel));
 }
 
-fn election_loop(rt: Arc<Runtime>, conf: Config, pool: DbPool, global_cancel: CancellationToken) {
+fn election_loop(
+    rt: Arc<Runtime>,
+    conf: Config,
+    worker_pool: DbPool,
+    leader_pool: DbPool,
+    global_cancel: CancellationToken,
+) {
     let me = holder_id();
     let ttl = conf.worker.lease_ttl_secs;
     let renew_secs = conf.worker.lease_renew_secs;
@@ -50,32 +62,45 @@ fn election_loop(rt: Arc<Runtime>, conf: Config, pool: DbPool, global_cancel: Ca
             return;
         }
 
-        match try_acquire(&pool, &me, ttl) {
+        match try_acquire(&leader_pool, &me, ttl) {
             Ok(Some(token)) => {
                 info!("acquired worker lease (token={token}) — this replica is the worker leader");
                 let leader_cancel = global_cancel.child_token();
-                spawn_singleton_workers(&rt, &conf, &pool, &leader_cancel);
+                spawn_singleton_workers(&rt, &conf, &worker_pool, &leader_cancel);
+
+                let mut last_ok = std::time::Instant::now();
+                let ttl_window = std::time::Duration::from_secs(ttl);
 
                 loop {
                     if sleep_interruptible(&global_cancel, renew_secs) {
                         leader_cancel.cancel();
-                        match release(&pool, &me, token) {
+                        match release(&leader_pool, &me, token) {
                             Ok(_) => info!("released worker lease on shutdown"),
                             Err(e) => warn!("failed to release worker lease on shutdown: {e:#}"),
                         }
                         return;
                     }
-                    match renew(&pool, &me, token, ttl) {
-                        Ok(true) => {} // still leader
+                    match renew(&leader_pool, &me, token, ttl) {
+                        Ok(true) => {
+                            last_ok = std::time::Instant::now(); // still leader
+                        }
                         Ok(false) => {
                             warn!("worker lease lost (superseded) — relinquishing workers");
                             leader_cancel.cancel();
                             break;
                         }
                         Err(e) => {
-                            error!("worker lease renew failed: {e:#} — relinquishing workers");
-                            leader_cancel.cancel();
-                            break;
+                            if last_ok.elapsed() >= ttl_window {
+                                error!(
+                                    "worker lease renew failing and lease expired ({e:#}) — relinquishing workers"
+                                );
+                                leader_cancel.cancel();
+                                break;
+                            }
+                            warn!(
+                                "worker lease renew failed ({e:#}); lease still valid for ~{}s, keeping workers and retrying",
+                                ttl_window.saturating_sub(last_ok.elapsed()).as_secs()
+                            );
                         }
                     }
                 }

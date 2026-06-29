@@ -144,6 +144,7 @@ async fn main() {
     // no longer hangs/500s while ingest is busy.
     let db_pool = db::build_pool(&conf.db);
     let worker_pool = db::build_worker_pool(&conf.db);
+    let leader_pool = db::build_leader_pool(&conf.db);
 
     let ss = misc::services::init();
     ss.write()
@@ -245,6 +246,7 @@ async fn main() {
                 aw_rt.clone(),
                 conf.clone(),
                 ingest_pool.clone(),
+                leader_pool.clone(),
                 aw_rt_cancel_token.clone(),
             );
         });

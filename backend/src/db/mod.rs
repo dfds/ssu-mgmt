@@ -72,6 +72,10 @@ pub fn build_worker_pool(conf: &Config) -> DbPool {
     )
 }
 
+pub fn build_leader_pool(conf: &Config) -> DbPool {
+    build_pool_inner(conf, 2, Some(1), std::time::Duration::from_secs(5))
+}
+
 fn build_pool_inner(
     conf: &Config,
     max_size: u32,
@@ -148,9 +152,7 @@ fn acquire_migration_lock(conn: &mut PgConnection) -> Result<(), Error> {
         if row.locked {
             return Ok(());
         }
-        info!(
-            "another replica holds the migration lock; waiting ({attempt}/{MAX_ATTEMPTS})"
-        );
+        info!("another replica holds the migration lock; waiting ({attempt}/{MAX_ATTEMPTS})");
         std::thread::sleep(retry);
     }
 
