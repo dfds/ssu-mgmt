@@ -74,7 +74,14 @@ const WEBID_WATERMARK_LAG_MINS: i64 = 5;
 /// row count (not just time) keeps every step finite even when a bulk backfill crams
 /// millions of rows into one `created_at` instant — the same failure that the SIEM
 /// first-seen harvest hit (see `siem::anomalies::HARVEST_STEP_ROWS`).
-const WEBID_HARVEST_STEP_ROWS: i64 = 200_000;
+///
+/// Sized well below that harvest's 200k: this step's fan-out is a *write*-heavy
+/// `UPDATE cloudtrail_events` (new row versions + index maintenance + WAL), not a
+/// read-mostly aggregate, so it has to commit within the per-step timeout while the
+/// sweep is concurrently writing the same table on an I/O-bound instance. A step that
+/// times out rolls back and re-tries the identical window forever, draining nothing —
+/// so this is deliberately conservative; the drain just spans more (cheap) steps.
+const WEBID_HARVEST_STEP_ROWS: i64 = 25_000;
 /// Wall-clock budget for draining the resolve backlog within one sweep. Each step
 /// commits independently, so progress persists across sweeps; this caps how long the
 /// pass spends catching up before yielding back to the sweep loop.
