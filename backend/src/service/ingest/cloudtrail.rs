@@ -70,6 +70,20 @@ const WEBID_WATERMARK_SOURCE: &str = "cloudtrail_webid";
 /// (later-committing) transaction isn't skipped — the next pass re-scans this small overlap.
 const WEBID_WATERMARK_LAG_MINS: i64 = 5;
 
+/// Cap a single web-identity resolve step at this many CloudTrail rows. Bounding by
+/// row count (not just time) keeps every step finite even when a bulk backfill crams
+/// millions of rows into one `created_at` instant — the same failure that the SIEM
+/// first-seen harvest hit (see `siem::anomalies::HARVEST_STEP_ROWS`).
+const WEBID_HARVEST_STEP_ROWS: i64 = 200_000;
+/// Wall-clock budget for draining the resolve backlog within one sweep. Each step
+/// commits independently, so progress persists across sweeps; this caps how long the
+/// pass spends catching up before yielding back to the sweep loop.
+const WEBID_DRAIN_BUDGET_SECS: i64 = 90;
+/// Per-step `statement_timeout` backstop. The pass is incremental, so a timed-out step
+/// just retries the same bounded window next sweep — it can never wedge the loop or run
+/// for 49 minutes the way the old unbounded full-window UPDATE did.
+const WEBID_STATEMENT_TIMEOUT: &str = "60s";
+
 /// Built-in SIEM-relevant `eventName` allowlist used when
 /// `SSU__CLOUDTRAIL__EVENT_ALLOWLIST` is empty.
 pub fn default_allowlist() -> Vec<String> {
@@ -1595,34 +1609,65 @@ async fn backfill_caller_account_inner(
 
 #[tracing::instrument(name = "cloudtrail.webid_resolve", skip_all, fields(window_days = window_days))]
 fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyhow::Result<usize> {
-    let floor = Utc::now() - Duration::days(window_days.max(1));
-
-    // Snapshot the new high-water insertion time *before* doing the work, minus a small
-    // lag (see doc comment). NULL → empty table, nothing to do.
-    #[derive(QueryableByName)]
-    struct Snap {
-        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-        w: Option<DateTime<Utc>>,
+    let deadline = Utc::now() + Duration::seconds(WEBID_DRAIN_BUDGET_SECS);
+    let mut total = 0usize;
+    loop {
+        match resolve_webidentity_step(conn, window_days)? {
+            Some(updated) => {
+                total += updated;
+                if Utc::now() >= deadline {
+                    break;
+                }
+            }
+            None => break, // caught up
+        }
     }
-    let w_new = diesel::sql_query(
-        "SELECT max(created_at) - ($1 || ' minutes')::interval AS w FROM cloudtrail_events",
-    )
-    .bind::<diesel::sql_types::Text, _>(WEBID_WATERMARK_LAG_MINS.to_string())
-    .get_result::<Snap>(conn)
-    .context("snapshot webid watermark")?
-    .w;
-    let Some(w_new) = w_new else {
-        return Ok(0);
-    };
+    Ok(total)
+}
 
-    // Previous watermark — default epoch (first run → full bootstrap pass).
-    let w = get_watermark(conn, WEBID_WATERMARK_SOURCE)
-        .context("read webid watermark")?
-        .and_then(|wm| wm.last_event_at)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch"));
+fn resolve_webidentity_step(
+    conn: &mut PgConnection,
+    window_days: i64,
+) -> anyhow::Result<Option<usize>> {
+    conn.transaction::<Option<usize>, anyhow::Error, _>(|conn| {
+        diesel::sql_query(format!(
+            "SET LOCAL statement_timeout = '{WEBID_STATEMENT_TIMEOUT}'"
+        ))
+        .execute(conn)
+        .context("set statement_timeout")?;
+        diesel::sql_query("SET LOCAL plan_cache_mode = 'force_custom_plan'")
+            .execute(conn)
+            .context("force custom plan")?;
 
-    let n = conn.transaction::<usize, anyhow::Error, _>(|conn| {
-        // (1) Harvest new mints (created_at > W) into the cache, then fan each
+        let floor = Utc::now() - Duration::days(window_days.max(1));
+
+        #[derive(QueryableByName)]
+        struct Snap {
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
+            w: Option<DateTime<Utc>>,
+        }
+        let target = diesel::sql_query(
+            "SELECT max(created_at) - ($1 || ' minutes')::interval AS w FROM cloudtrail_events",
+        )
+        .bind::<diesel::sql_types::Text, _>(WEBID_WATERMARK_LAG_MINS.to_string())
+        .get_result::<Snap>(conn)
+        .context("snapshot webid watermark")?
+        .w;
+        let Some(target) = target else {
+            return Ok(None);
+        };
+
+        let w = get_watermark(conn, WEBID_WATERMARK_SOURCE)
+            .context("read webid watermark")?
+            .and_then(|wm| wm.last_event_at)
+            .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch"));
+
+        let boundary = webid_harvest_boundary(conn, w, target)?;
+        if boundary <= w {
+            return Ok(None); // caught up
+        }
+
+        // (1) Harvest new mints in (w, boundary] into the cache, then fan each
         // newly-cached/changed session out to all its downstream rows (any age) via the
         // principal_arn index. A data-modifying CTE: the INSERT…ON CONFLICT…RETURNING
         // yields exactly the sessions whose subject is new or changed (unchanged
@@ -1638,6 +1683,7 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
                  WHERE event_name = 'AssumeRoleWithWebIdentity' \
                    AND event_time >= $1 \
                    AND created_at > $2 \
+                   AND created_at <= $3 \
                    AND raw #>> '{responseElements,subjectFromWebIdentityToken}' IS NOT NULL \
                    AND raw #>> '{responseElements,assumedRoleUser,arn}' IS NOT NULL \
                  GROUP BY 1 \
@@ -1656,10 +1702,11 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
         )
         .bind::<diesel::sql_types::Timestamptz, _>(floor)
         .bind::<diesel::sql_types::Timestamptz, _>(w)
+        .bind::<diesel::sql_types::Timestamptz, _>(boundary)
         .execute(conn)
         .context("resolve web-identity chains (harvest + fan-out)")?;
 
-        // (2) Apply the cache to new downstream rows (created_at > W) — a PK lookup into
+        // (2) Apply the cache to new downstream rows in (w, boundary] — a PK lookup into
         // the cache, scanned via idx_cloudtrail_created_at. The normal case (downstream
         // ingested after its mint, which is already cached).
         let n2 = diesel::sql_query(
@@ -1668,12 +1715,14 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
              FROM webidentity_session_subjects m \
              WHERE d.principal_arn = m.session_arn \
                AND d.created_at > $2 \
+               AND d.created_at <= $3 \
                AND d.event_time >= $1 \
                AND d.event_name <> 'AssumeRoleWithWebIdentity' \
                AND d.principal_name IS DISTINCT FROM m.subject",
         )
         .bind::<diesel::sql_types::Timestamptz, _>(floor)
         .bind::<diesel::sql_types::Timestamptz, _>(w)
+        .bind::<diesel::sql_types::Timestamptz, _>(boundary)
         .execute(conn)
         .context("resolve web-identity chains (apply cache to new downstream)")?;
 
@@ -1687,8 +1736,6 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
         .execute(conn)
         .context("prune webid session cache")?;
 
-        // Advance the watermark in the same txn. Direct UPSERT (not `advance_watermark`)
-        // so this internal bookkeeping row doesn't fire a console progress push.
         diesel::sql_query(
             "INSERT INTO ingest_watermarks \
                (source, last_event_at, last_run_at, objects_scanned, events_applied) \
@@ -1698,13 +1745,39 @@ fn resolve_webidentity_chains(conn: &mut PgConnection, window_days: i64) -> anyh
                last_run_at   = now()",
         )
         .bind::<diesel::sql_types::Text, _>(WEBID_WATERMARK_SOURCE)
-        .bind::<diesel::sql_types::Timestamptz, _>(w_new)
+        .bind::<diesel::sql_types::Timestamptz, _>(boundary)
         .execute(conn)
         .context("advance webid watermark")?;
 
-        Ok(n1 + n2)
-    })?;
-    Ok(n)
+        Ok(Some(n1 + n2))
+    })
+}
+
+fn webid_harvest_boundary(
+    conn: &mut PgConnection,
+    w: DateTime<Utc>,
+    target: DateTime<Utc>,
+) -> anyhow::Result<DateTime<Utc>> {
+    #[derive(QueryableByName)]
+    struct B {
+        #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+        boundary: DateTime<Utc>,
+    }
+    let b = diesel::sql_query(format!(
+        "SELECT LEAST( \
+           $2, \
+           COALESCE((SELECT max(created_at) FROM ( \
+              SELECT created_at FROM cloudtrail_events \
+               WHERE created_at > $1 AND created_at <= $2 \
+               ORDER BY created_at LIMIT {WEBID_HARVEST_STEP_ROWS} \
+            ) s), $2) \
+         ) AS boundary"
+    ))
+    .bind::<diesel::sql_types::Timestamptz, _>(w)
+    .bind::<diesel::sql_types::Timestamptz, _>(target)
+    .get_result::<B>(conn)
+    .context("compute webid harvest boundary")?;
+    Ok(b.boundary)
 }
 
 fn str_field(rec: &Value, key: &str) -> Option<String> {
