@@ -25,7 +25,7 @@ const HARVEST_STEP_ROWS: i64 = 200_000;
 /// Wall-clock budget for draining a harvest backlog within one SIEM pass. Each
 /// step commits independently, so progress persists across passes; this just
 /// caps how long one pass spends catching up before yielding to the detectors.
-const HARVEST_DRAIN_BUDGET_SECS: i64 = 25;
+const HARVEST_DRAIN_BUDGET_SECS: i64 = 90;
 
 /// Run every anomaly detector. Returns the number of anomaly rows touched.
 pub fn detect(conn: &mut PgConnection, siem: &SiemConfig) -> anyhow::Result<usize> {
