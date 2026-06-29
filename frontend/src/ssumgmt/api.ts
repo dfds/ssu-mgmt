@@ -57,7 +57,8 @@ export type EventField =
   | 'role'
   | 'idsource'
   | 'account'
-  | 'calleraccount';
+  | 'calleraccount'
+  | 'kind';
 
 export const EVENT_FIELDS: readonly EventField[] = [
   'actor',
@@ -72,6 +73,7 @@ export const EVENT_FIELDS: readonly EventField[] = [
   'idsource',
   'account',
   'calleraccount',
+  'kind',
 ];
 
 const FIELD_SET: ReadonlySet<string> = new Set(EVENT_FIELDS);
@@ -83,7 +85,11 @@ export interface QueryOrder {
   field: OrderField;
   dir: OrderDir;
 }
-const ORDERABLE: ReadonlySet<string> = new Set<string>([...EVENT_FIELDS, 'ts']);
+
+const ORDERABLE: ReadonlySet<string> = new Set<string>([
+  ...EVENT_FIELDS.filter((f) => f !== 'kind'),
+  'ts',
+]);
 
 // ---------------------------------------------------------------------------
 // Query AST — mirrors the backend `query_ast::Node` serde enum (tagged on
@@ -112,6 +118,8 @@ export interface FieldHelp {
 const FIELD_VALUES: Partial<Record<EventField, readonly string[]>> = {
   source: ['selfservice', 'cloudtrail', 'github', 'ssu-mgmt'],
   status: ['success', 'failure'],
+  // Reconciled actor kind. `unknown` = unresolved actor, not yet aliased, or none.
+  kind: ['person', 'service', 'unknown'],
 };
 
 export const QUERY_FIELD_HELP: readonly FieldHelp[] = EVENT_FIELDS.map((field) => ({
@@ -125,6 +133,7 @@ export const QUERY_EXAMPLES: readonly string[] = [
   '(source=cloudtrail -action:AssumeRole) AND (source=selfservice actor:john)',
   'actor:"john doe" OR idsource~oidc',
   'json.requestParameters.maxSessionDuration >= 1500',
+  'kind:service action:AssumeRole',
   'json.responseElements.tags["dfds.cost.centre"] = "ti-cae"',
   'ts >= 2026-06-20 raw:ConsoleLogin',
   'source=cloudtrail status=failure order by actor asc',

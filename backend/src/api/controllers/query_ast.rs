@@ -84,6 +84,10 @@ pub enum Field {
     IdSource,
     Account,
     CallerAccount,
+    /// Pseudo-field: not a view column. Resolves an event's raw `actor` to its
+    /// reconciled actor kind via `actor_aliases`→`actors`. Compiled specially in
+    /// `compile_field`; never reaches `column()`.
+    Kind,
 }
 
 impl Field {
@@ -101,6 +105,7 @@ impl Field {
             Field::IdSource => "identity_source",
             Field::Account => "account_id",
             Field::CallerAccount => "caller_account_id",
+            Field::Kind => unreachable!("kind is compiled via compile_actor_kind"),
         }
     }
 }
@@ -160,6 +165,9 @@ fn compile_field(
     value: &str,
     binds: &mut Vec<Bind>,
 ) -> Result<String, String> {
+    if let Field::Kind = field {
+        return compile_actor_kind(op, value, binds);
+    }
     let col = field.column();
     match op {
         Op::Eq => {
@@ -188,6 +196,38 @@ fn compile_field(
             col
         )),
     }
+}
+
+fn compile_actor_kind(op: Op, value: &str, binds: &mut Vec<Bind>) -> Result<String, String> {
+    let negate = match op {
+        Op::Eq | Op::Contains => false,
+        Op::Ne | Op::NotContains => true,
+        _ => return Err("operator not allowed on `kind`".to_string()),
+    };
+    let predicate = match value {
+        "person" | "service" => {
+            binds.push(Bind::Text(value.to_owned()));
+            format!(
+                "(actor IS NOT NULL AND actor IN (SELECT al.alias FROM actor_aliases al \
+                 JOIN actors a ON a.id = al.actor_id WHERE a.kind = ${}))",
+                binds.len()
+            )
+        }
+        "unknown" => "(actor IS NULL OR actor NOT IN (SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service')))"
+            .to_string(),
+        other => {
+            return Err(format!(
+                "kind must be person|service|unknown (got `{}`)",
+                other
+            ))
+        }
+    };
+    Ok(if negate {
+        format!("NOT {}", predicate)
+    } else {
+        predicate
+    })
 }
 
 fn compile_ts(op: Op, value: &str, binds: &mut Vec<Bind>) -> Result<String, String> {
@@ -268,5 +308,73 @@ fn comparison_op(op: Op) -> Option<&'static str> {
         Op::Lt => Some("<"),
         Op::Lte => Some("<="),
         Op::Contains | Op::NotContains => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_node(op: Op, value: &str) -> Node {
+        Node::Field {
+            field: Field::Kind,
+            op,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn kind_person_match_semi_joins_aliases() {
+        let mut binds = Vec::new();
+        // `:` parses to `Contains`; treated as an exact match for `kind`.
+        let sql = compile(&kind_node(Op::Contains, "person"), &mut binds).unwrap();
+        assert_eq!(
+            sql,
+            "(actor IS NOT NULL AND actor IN (SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind = $1))"
+        );
+        assert_eq!(binds.len(), 1);
+        assert!(matches!(&binds[0], Bind::Text(s) if s == "person"));
+    }
+
+    #[test]
+    fn kind_service_eq_binds_value() {
+        let mut binds = Vec::new();
+        let sql = compile(&kind_node(Op::Eq, "service"), &mut binds).unwrap();
+        assert!(sql.contains("a.kind = $1"));
+        assert!(matches!(&binds[0], Bind::Text(s) if s == "service"));
+    }
+
+    #[test]
+    fn kind_unknown_is_anti_join_with_no_binds() {
+        let mut binds = Vec::new();
+        let sql = compile(&kind_node(Op::Contains, "unknown"), &mut binds).unwrap();
+        assert_eq!(
+            sql,
+            "(actor IS NULL OR actor NOT IN (SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service')))"
+        );
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn kind_negation_wraps_in_not() {
+        let mut binds = Vec::new();
+        // `kind!=service` / `-kind:service`.
+        let sql = compile(&kind_node(Op::Ne, "service"), &mut binds).unwrap();
+        assert!(sql.starts_with("NOT (actor IS NOT NULL AND actor IN ("));
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn kind_rejects_unknown_value() {
+        let mut binds = Vec::new();
+        assert!(compile(&kind_node(Op::Eq, "robot"), &mut binds).is_err());
+    }
+
+    #[test]
+    fn kind_rejects_comparison_operator() {
+        let mut binds = Vec::new();
+        assert!(compile(&kind_node(Op::Gt, "person"), &mut binds).is_err());
     }
 }
