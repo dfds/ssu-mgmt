@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Date, Double, Nullable, Text, Timestamptz};
 use diesel::PgConnection;
-use log::warn;
+use log::{info, warn};
 
 use crate::misc::config::SiemConfig;
 use crate::service::ingest::get_watermark;
@@ -127,6 +127,16 @@ fn harvest_boundary(
     .get_result::<B>(conn)
     .context("compute harvest boundary")?;
     Ok(b.boundary)
+}
+
+// Report drain progress only while a backlog remains; quiet at steady state.
+fn log_harvest_drain(label: &str, steps: u32, last_boundary: Option<DateTime<Utc>>) {
+    if let Some(b) = last_boundary {
+        let lag = (Utc::now() - b).num_minutes().max(0);
+        if lag > 20 {
+            info!("siem {label} harvest: drained {steps} step(s) this pass, watermark lag {lag}m");
+        }
+    }
 }
 
 fn volume_spike(
@@ -284,15 +294,26 @@ fn off_hours_spike(
 
 fn maintain_first_seen(conn: &mut PgConnection) -> anyhow::Result<()> {
     let deadline = Utc::now() + Duration::seconds(HARVEST_DRAIN_BUDGET_SECS);
+    let mut steps = 0u32;
+    let mut last_boundary = None;
     loop {
-        if first_seen_step(conn)? || Utc::now() >= deadline {
-            return Ok(());
+        match first_seen_step(conn)? {
+            Some(b) => {
+                steps += 1;
+                last_boundary = Some(b);
+                if Utc::now() >= deadline {
+                    break;
+                }
+            }
+            None => break,
         }
     }
+    log_harvest_drain("first-seen", steps, last_boundary);
+    Ok(())
 }
 
-fn first_seen_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
-    conn.transaction::<bool, anyhow::Error, _>(|conn| {
+fn first_seen_step(conn: &mut PgConnection) -> anyhow::Result<Option<DateTime<Utc>>> {
+    conn.transaction::<Option<DateTime<Utc>>, anyhow::Error, _>(|conn| {
         set_txn_guards(conn)?;
 
         #[derive(QueryableByName)]
@@ -312,7 +333,7 @@ fn first_seen_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         .context("snapshot first-seen watermark")?
         .w;
         let Some(target) = target else {
-            return Ok(true);
+            return Ok(None);
         };
 
         let w = get_watermark(conn, FIRST_SEEN_WATERMARK_SOURCE)
@@ -322,7 +343,7 @@ fn first_seen_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
 
         let boundary = harvest_boundary(conn, w, target)?;
         if boundary <= w {
-            return Ok(true); // caught up: no rows past the watermark
+            return Ok(None); // caught up: no rows past the watermark
         }
 
         diesel::sql_query(
@@ -360,21 +381,32 @@ fn first_seen_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         .execute(conn)
         .context("advance first-seen watermark")?;
 
-        Ok(boundary >= target)
+        Ok(Some(boundary))
     })
 }
 
 fn maintain_daily_counts(conn: &mut PgConnection) -> anyhow::Result<()> {
     let deadline = Utc::now() + Duration::seconds(HARVEST_DRAIN_BUDGET_SECS);
+    let mut steps = 0u32;
+    let mut last_boundary = None;
     loop {
-        if daily_counts_step(conn)? || Utc::now() >= deadline {
-            return Ok(());
+        match daily_counts_step(conn)? {
+            Some(b) => {
+                steps += 1;
+                last_boundary = Some(b);
+                if Utc::now() >= deadline {
+                    break;
+                }
+            }
+            None => break,
         }
     }
+    log_harvest_drain("daily-counts", steps, last_boundary);
+    Ok(())
 }
 
-fn daily_counts_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
-    conn.transaction::<bool, anyhow::Error, _>(|conn| {
+fn daily_counts_step(conn: &mut PgConnection) -> anyhow::Result<Option<DateTime<Utc>>> {
+    conn.transaction::<Option<DateTime<Utc>>, anyhow::Error, _>(|conn| {
         set_txn_guards(conn)?;
 
         let w = get_watermark(conn, DAILY_COUNTS_WATERMARK_SOURCE)
@@ -385,7 +417,7 @@ fn daily_counts_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         let target = Utc::now() - Duration::minutes(DAILY_COUNTS_SAFETY_MARGIN_MINS);
         let boundary = harvest_boundary(conn, w, target)?;
         if boundary <= w {
-            return Ok(true); // caught up: no rows past the watermark
+            return Ok(None); // caught up: no rows past the watermark
         }
 
         diesel::sql_query(
@@ -439,21 +471,32 @@ fn daily_counts_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         .execute(conn)
         .context("advance daily-counts watermark")?;
 
-        Ok(boundary >= target)
+        Ok(Some(boundary))
     })
 }
 
 fn maintain_identity_context(conn: &mut PgConnection) -> anyhow::Result<()> {
     let deadline = Utc::now() + Duration::seconds(HARVEST_DRAIN_BUDGET_SECS);
+    let mut steps = 0u32;
+    let mut last_boundary = None;
     loop {
-        if identity_context_step(conn)? || Utc::now() >= deadline {
-            return Ok(());
+        match identity_context_step(conn)? {
+            Some(b) => {
+                steps += 1;
+                last_boundary = Some(b);
+                if Utc::now() >= deadline {
+                    break;
+                }
+            }
+            None => break,
         }
     }
+    log_harvest_drain("identity-context", steps, last_boundary);
+    Ok(())
 }
 
-fn identity_context_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
-    conn.transaction::<bool, anyhow::Error, _>(|conn| {
+fn identity_context_step(conn: &mut PgConnection) -> anyhow::Result<Option<DateTime<Utc>>> {
+    conn.transaction::<Option<DateTime<Utc>>, anyhow::Error, _>(|conn| {
         set_txn_guards(conn)?;
 
         #[derive(QueryableByName)]
@@ -469,7 +512,7 @@ fn identity_context_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         .context("snapshot identity-context watermark")?
         .w;
         let Some(target) = target else {
-            return Ok(true);
+            return Ok(None);
         };
 
         let w = get_watermark(conn, IDENTITY_CONTEXT_WATERMARK_SOURCE)
@@ -479,7 +522,7 @@ fn identity_context_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
 
         let boundary = harvest_boundary(conn, w, target)?;
         if boundary <= w {
-            return Ok(true); // caught up: no rows past the watermark
+            return Ok(None); // caught up: no rows past the watermark
         }
 
         diesel::sql_query(
@@ -513,6 +556,6 @@ fn identity_context_step(conn: &mut PgConnection) -> anyhow::Result<bool> {
         .execute(conn)
         .context("advance identity-context watermark")?;
 
-        Ok(boundary >= target)
+        Ok(Some(boundary))
     })
 }
