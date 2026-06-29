@@ -208,13 +208,13 @@ fn compile_actor_kind(op: Op, value: &str, binds: &mut Vec<Bind>) -> Result<Stri
         "person" | "service" => {
             binds.push(Bind::Text(value.to_owned()));
             format!(
-                "(actor IS NOT NULL AND actor IN (SELECT al.alias FROM actor_aliases al \
-                 JOIN actors a ON a.id = al.actor_id WHERE a.kind = ${}))",
+                "(actor IS NOT NULL AND actor = ANY(ARRAY(SELECT al.alias FROM actor_aliases al \
+                 JOIN actors a ON a.id = al.actor_id WHERE a.kind = ${})))",
                 binds.len()
             )
         }
-        "unknown" => "(actor IS NULL OR actor NOT IN (SELECT al.alias FROM actor_aliases al \
-             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service')))"
+        "unknown" => "(actor IS NULL OR actor <> ALL(ARRAY(SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service'))))"
             .to_string(),
         other => {
             return Err(format!(
@@ -330,8 +330,8 @@ mod tests {
         let sql = compile(&kind_node(Op::Contains, "person"), &mut binds).unwrap();
         assert_eq!(
             sql,
-            "(actor IS NOT NULL AND actor IN (SELECT al.alias FROM actor_aliases al \
-             JOIN actors a ON a.id = al.actor_id WHERE a.kind = $1))"
+            "(actor IS NOT NULL AND actor = ANY(ARRAY(SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind = $1)))"
         );
         assert_eq!(binds.len(), 1);
         assert!(matches!(&binds[0], Bind::Text(s) if s == "person"));
@@ -351,8 +351,8 @@ mod tests {
         let sql = compile(&kind_node(Op::Contains, "unknown"), &mut binds).unwrap();
         assert_eq!(
             sql,
-            "(actor IS NULL OR actor NOT IN (SELECT al.alias FROM actor_aliases al \
-             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service')))"
+            "(actor IS NULL OR actor <> ALL(ARRAY(SELECT al.alias FROM actor_aliases al \
+             JOIN actors a ON a.id = al.actor_id WHERE a.kind IN ('person','service'))))"
         );
         assert!(binds.is_empty());
     }
@@ -362,7 +362,7 @@ mod tests {
         let mut binds = Vec::new();
         // `kind!=service` / `-kind:service`.
         let sql = compile(&kind_node(Op::Ne, "service"), &mut binds).unwrap();
-        assert!(sql.starts_with("NOT (actor IS NOT NULL AND actor IN ("));
+        assert!(sql.starts_with("NOT (actor IS NOT NULL AND actor = ANY(ARRAY("));
         assert_eq!(binds.len(), 1);
     }
 
