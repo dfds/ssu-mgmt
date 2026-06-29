@@ -29,6 +29,8 @@ pub struct ActorsParams {
     pub origin: Option<String>,
     /// `risk` (default) | `recent` | `name`.
     pub sort: Option<String>,
+    /// `asc` | `desc`. Omitted → each sort key's natural default.
+    pub dir: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -82,10 +84,18 @@ async fn actors_handler(
     // ILIKE pattern; empty `q` → `%%` matches everything (the `$N = '' OR …` guard
     // would also work, but keeping the bind uniform is simpler).
     let q_pat = format!("%{}%", params.q.unwrap_or_default());
-    let order = match params.sort.as_deref() {
-        Some("recent") => "a.last_active DESC NULLS LAST",
-        Some("name") => "COALESCE(a.display_name, a.id) ASC",
-        _ => "r.score DESC NULLS LAST, a.last_active DESC NULLS LAST",
+    let asc = match params.dir.as_deref() {
+        Some("asc") => Some(true),
+        Some("desc") => Some(false),
+        _ => None,
+    };
+    let order = match (params.sort.as_deref(), asc) {
+        (Some("recent"), Some(true)) => "a.last_active ASC NULLS LAST",
+        (Some("recent"), _) => "a.last_active DESC NULLS LAST",
+        (Some("name"), Some(false)) => "COALESCE(a.display_name, a.id) DESC",
+        (Some("name"), _) => "COALESCE(a.display_name, a.id) ASC",
+        (_, Some(true)) => "r.score ASC NULLS LAST, a.last_active DESC NULLS LAST",
+        (_, _) => "r.score DESC NULLS LAST, a.last_active DESC NULLS LAST",
     };
 
     let where_clause = "WHERE ($1 = '' OR a.kind = $1) \

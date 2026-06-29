@@ -13,8 +13,29 @@ export const ANOMALY_KINDS: { key: string; label: string }[] = [
 
 export const ANOMALY_KIND_KEYS: readonly string[] = ANOMALY_KINDS.map((k) => k.key).filter(Boolean);
 
+// Trailing-window options for the anomaly feed. `hours: null` means "all" — we
+// send an epoch `from` to defeat the backend's default window.
+export const ANOMALY_RANGES: { key: string; label: string; hours: number | null }[] = [
+  { key: '24h', label: '24h', hours: 24 },
+  { key: '7d', label: '7d', hours: 24 * 7 },
+  { key: '30d', label: '30d', hours: 24 * 30 },
+  { key: '90d', label: '90d', hours: 24 * 90 },
+  { key: 'all', label: 'all', hours: null },
+];
+
+export const ANOMALY_RANGE_KEYS: readonly string[] = ANOMALY_RANGES.map((r) => r.key);
+
+export const DEFAULT_ANOMALY_RANGE = '7d';
+
+function rangeFrom(key: string): string {
+  const r = ANOMALY_RANGES.find((x) => x.key === key);
+  if (!r || r.hours === null) return '1970-01-01T00:00:00Z';
+  return new Date(Date.now() - r.hours * 3600_000).toISOString();
+}
+
 export interface AnomaliesFeed {
   kind: Ref<string>;
+  range: Ref<string>;
   rows: ComputedRef<Anomaly[]>;
   total: ComputedRef<number>;
   capped: ComputedRef<boolean>;
@@ -29,6 +50,7 @@ export interface AnomaliesFeed {
   pageSize: number;
   load: () => Promise<void>;
   setKind: (k: string) => void;
+  setRange: (r: string) => void;
   prev: () => void;
   next: () => void;
 }
@@ -38,6 +60,7 @@ export function useAnomaliesFeed(opts: { pageSize?: number; limit?: number } = {
   const fetchLimit = opts.limit ?? 500;
 
   const kind = ref('');
+  const range = ref(DEFAULT_ANOMALY_RANGE);
   const offset = ref(0);
   const all = ref<Anomaly[]>([]);
   const loading = ref(false);
@@ -57,7 +80,11 @@ export function useAnomaliesFeed(opts: { pageSize?: number; limit?: number } = {
     loading.value = true;
     error.value = null;
     try {
-      all.value = await fetchAnomalies({ kind: kind.value || undefined, limit: fetchLimit });
+      all.value = await fetchAnomalies({
+        kind: kind.value || undefined,
+        from: rangeFrom(range.value),
+        limit: fetchLimit,
+      });
       // Clamp the page if the new result set is shorter than the prior offset.
       if (offset.value >= all.value.length) offset.value = 0;
       forbidden.value = false;
@@ -76,6 +103,13 @@ export function useAnomaliesFeed(opts: { pageSize?: number; limit?: number } = {
     void load();
   }
 
+  function setRange(r: string): void {
+    if (r === range.value || !ANOMALY_RANGE_KEYS.includes(r)) return;
+    range.value = r;
+    offset.value = 0;
+    void load();
+  }
+
   // Client-side pagination over the already-fetched window — no refetch.
   function prev(): void {
     if (canPrev.value) offset.value = Math.max(0, offset.value - pageSize);
@@ -86,6 +120,7 @@ export function useAnomaliesFeed(opts: { pageSize?: number; limit?: number } = {
 
   return {
     kind,
+    range,
     rows,
     total,
     capped,
@@ -100,6 +135,7 @@ export function useAnomaliesFeed(opts: { pageSize?: number; limit?: number } = {
     pageSize,
     load,
     setKind,
+    setRange,
     prev,
     next,
   };

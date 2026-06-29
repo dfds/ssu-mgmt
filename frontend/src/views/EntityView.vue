@@ -51,7 +51,7 @@ const currentId = computed(() => (route.params.id as string | undefined) ?? '');
 
 const queryLink = computed(() => ({
   name: 'console-query',
-  query: { q: `actor:"${currentId.value}"` },
+  query: { q: `actor="${currentId.value}"` },
 }));
 const graphLink = computed(() => ({ name: 'console-graph', query: { actor: currentId.value } }));
 

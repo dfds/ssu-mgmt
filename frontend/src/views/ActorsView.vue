@@ -15,16 +15,20 @@ const STORAGE_KEY = 'ssumgmt-actors';
 const PAGE = 50;
 const KINDS = ['person', 'service', 'unresolved'] as const;
 type Sort = 'risk' | 'recent' | 'name';
+type Dir = 'asc' | 'desc';
 const SORTS: { key: Sort; label: string }[] = [
   { key: 'risk', label: 'risk' },
   { key: 'recent', label: 'recent' },
   { key: 'name', label: 'name' },
 ];
+// Natural direction for each key when first selected; clicking again toggles.
+const DEFAULT_DIR: Record<Sort, Dir> = { risk: 'desc', recent: 'desc', name: 'asc' };
 
 const q = ref('');
 const kind = ref('');
 const origin = ref('');
 const sort = ref<Sort>('risk');
+const dir = ref<Dir>(DEFAULT_DIR.risk);
 const offset = ref(0);
 
 const rows = ref<ActorListRow[]>([]);
@@ -47,6 +51,7 @@ async function load(): Promise<void> {
       kind: kind.value || undefined,
       origin: origin.value || undefined,
       sort: sort.value,
+      dir: dir.value,
       limit: PAGE,
       offset: offset.value,
     });
@@ -89,6 +94,7 @@ function currentQuery(): LocationQueryRaw {
   if (kind.value) out.kind = kind.value;
   if (origin.value) out.origin = origin.value;
   if (sort.value !== 'risk') out.sort = sort.value;
+  if (dir.value !== DEFAULT_DIR[sort.value]) out.dir = dir.value;
   if (offset.value > 0) out.offset = String(offset.value);
   return out;
 }
@@ -99,6 +105,7 @@ function routeMatchesState(): boolean {
     ((route.query.kind as string) ?? '') === kind.value &&
     ((route.query.origin as string) ?? '') === origin.value &&
     ((route.query.sort as string) ?? 'risk') === sort.value &&
+    ((route.query.dir as string) ?? DEFAULT_DIR[sort.value]) === dir.value &&
     (Number(route.query.offset) || 0) === (offset.value || 0)
   );
 }
@@ -111,10 +118,12 @@ function readFromRoute(): void {
   origin.value = ACTOR_ORIGINS.includes(o) ? o : '';
   const s = (route.query.sort as string) ?? 'risk';
   sort.value = (['risk', 'recent', 'name'] as string[]).includes(s) ? (s as Sort) : 'risk';
+  const d = (route.query.dir as string) ?? '';
+  dir.value = d === 'asc' || d === 'desc' ? d : DEFAULT_DIR[sort.value];
   offset.value = Number(route.query.offset) || 0;
 }
 
-watch([q, kind, origin, sort, offset], () => {
+watch([q, kind, origin, sort, dir, offset], () => {
   if (routeMatchesState()) return;
   void router.replace({ query: currentQuery() }).catch(() => {});
 });
@@ -142,12 +151,18 @@ function bar(score: number | null): { full: string; empty: string } {
   return { full: '█'.repeat(n), empty: '░'.repeat(Math.max(0, 8 - n)) };
 }
 
-const serverSort = computed(() => ({ key: sort.value, dir: sort.value === 'name' ? 'asc' : 'desc' } as const));
-function onServerSort(key: string): void {
-  if (key === 'risk' || key === 'recent' || key === 'name') {
+const serverSort = computed(() => ({ key: sort.value, dir: dir.value }));
+
+function setSort(key: Sort): void {
+  if (sort.value === key) dir.value = dir.value === 'asc' ? 'desc' : 'asc';
+  else {
     sort.value = key;
-    applyFilters();
+    dir.value = DEFAULT_DIR[key];
   }
+  applyFilters();
+}
+function onServerSort(key: string): void {
+  if (key === 'risk' || key === 'recent' || key === 'name') setSort(key);
 }
 </script>
 
@@ -193,7 +208,7 @@ function onServerSort(key: string): void {
             v-for="s in SORTS"
             :key="s.key"
             type="button"
-            @click="sort = s.key; applyFilters()"
+            @click="setSort(s.key)"
             :style="{
               background: 'none',
               border: '1px solid ' + (s.key === sort ? 'var(--t-accent)' : 'var(--t-line2)'),

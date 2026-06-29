@@ -919,6 +919,7 @@ export interface ActorsQuery {
   kind?: string;
   origin?: string;
   sort?: 'risk' | 'recent' | 'name';
+  dir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }
@@ -929,6 +930,7 @@ export function fetchActors(p: ActorsQuery = {}): Promise<ActorsPage> {
   if (p.kind) params.set('kind', p.kind);
   if (p.origin) params.set('origin', p.origin);
   if (p.sort) params.set('sort', p.sort);
+  if (p.dir) params.set('dir', p.dir);
   if (p.limit !== undefined) params.set('limit', String(p.limit));
   if (p.offset !== undefined) params.set('offset', String(p.offset));
   return getJson<ActorsPage>(`/api/actors${qs(params)}`);

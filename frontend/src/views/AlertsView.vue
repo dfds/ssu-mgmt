@@ -4,7 +4,7 @@ import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import type { Alert, Anomaly } from '../ssumgmt/api';
 import { sourceColor, relAge } from '../ssumgmt/format';
 import { useAlertsFeed, ALERT_FILTERS, type AlertFilter, type TriageAction } from '../ssumgmt/useAlertsFeed';
-import { useAnomaliesFeed, ANOMALY_KINDS, ANOMALY_KIND_KEYS } from '../ssumgmt/useAnomaliesFeed';
+import { useAnomaliesFeed, ANOMALY_KINDS, ANOMALY_KIND_KEYS, ANOMALY_RANGES, ANOMALY_RANGE_KEYS, DEFAULT_ANOMALY_RANGE } from '../ssumgmt/useAnomaliesFeed';
 import { FEED_COLUMNS, alertToFeedRow, anomalyToFeedRow, type FeedRow, type FeedType } from '../ssumgmt/feedColumns';
 import AlertDetailModal from '../ssumgmt/AlertDetailModal.vue';
 import AnomalyDetailModal from '../ssumgmt/AnomalyDetailModal.vue';
@@ -74,6 +74,7 @@ function currentQuery(): LocationQueryRaw {
     if (alertsFeed.offset.value > 0) q.offset = String(alertsFeed.offset.value);
   } else {
     if (anomaliesFeed.kind.value) q.kind = anomaliesFeed.kind.value;
+    if (anomaliesFeed.range.value !== DEFAULT_ANOMALY_RANGE) q.range = anomaliesFeed.range.value;
     if (anomaliesFeed.offset.value > 0) q.offset = String(anomaliesFeed.offset.value);
   }
   return q;
@@ -86,7 +87,11 @@ function routeMatchesState(): boolean {
   if (type.value === 'alert') {
     return ((route.query.filter as string) ?? '') === alertsFeed.filter.value && off === (alertsFeed.offset.value || 0);
   }
-  return ((route.query.kind as string) ?? '') === anomaliesFeed.kind.value && off === (anomaliesFeed.offset.value || 0);
+  return (
+    ((route.query.kind as string) ?? '') === anomaliesFeed.kind.value &&
+    ((route.query.range as string) || DEFAULT_ANOMALY_RANGE) === anomaliesFeed.range.value &&
+    off === (anomaliesFeed.offset.value || 0)
+  );
 }
 
 function readFromRoute(): void {
@@ -98,6 +103,8 @@ function readFromRoute(): void {
   } else {
     const k = (route.query.kind as string) ?? '';
     anomaliesFeed.kind.value = ANOMALY_KIND_KEYS.includes(k) ? k : '';
+    const r = (route.query.range as string) ?? '';
+    anomaliesFeed.range.value = ANOMALY_RANGE_KEYS.includes(r) ? r : DEFAULT_ANOMALY_RANGE;
     anomaliesFeed.offset.value = Number(route.query.offset) || 0;
   }
 }
@@ -109,6 +116,7 @@ watch(
     () => alertsFeed.filter.value,
     () => alertsFeed.offset.value,
     () => anomaliesFeed.kind.value,
+    () => anomaliesFeed.range.value,
     () => anomaliesFeed.offset.value,
   ],
   () => {
@@ -212,15 +220,34 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
           >{{ f.label }}</button>
         </span>
 
-        <!-- anomaly kind filter -->
-        <select
-          v-else
-          :value="anomaliesFeed.kind.value"
-          @change="anomaliesFeed.setKind(($event.target as HTMLSelectElement).value)"
-          style="background:var(--t-bg);border:1px solid var(--t-line2);color:var(--t-dim);font-family:inherit;font-size:11px;padding:3px 6px;outline:none"
-        >
-          <option v-for="k in ANOMALY_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
-        </select>
+        <!-- anomaly kind + range filters -->
+        <template v-else>
+          <select
+            :value="anomaliesFeed.kind.value"
+            @change="anomaliesFeed.setKind(($event.target as HTMLSelectElement).value)"
+            style="background:var(--t-bg);border:1px solid var(--t-line2);color:var(--t-dim);font-family:inherit;font-size:11px;padding:3px 6px;outline:none"
+          >
+            <option v-for="k in ANOMALY_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
+          </select>
+          <span class="term-btngroup" style="display:flex;gap:3px">
+            <button
+              v-for="r in ANOMALY_RANGES"
+              :key="r.key"
+              type="button"
+              @click="anomaliesFeed.setRange(r.key)"
+              :style="{
+                background: 'none',
+                border: '1px solid ' + (r.key === anomaliesFeed.range.value ? 'var(--t-accent)' : 'var(--t-line2)'),
+                color: r.key === anomaliesFeed.range.value ? 'var(--t-accent)' : 'var(--t-dim)',
+                fontFamily: 'inherit',
+                fontSize: '10.5px',
+                lineHeight: 1.4,
+                padding: '1px 7px',
+                cursor: 'pointer',
+              }"
+            >{{ r.label }}</button>
+          </span>
+        </template>
 
         <span style="flex:1"></span>
         <template v-if="paginated">

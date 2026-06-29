@@ -233,7 +233,7 @@ pub struct AnomaliesParams {
 
 /// Anomalies in a window, newest first. Backs both the overview anomaly feed and
 /// the timeline markers (each row carries `event_time` for x-positioning).
-/// Defaults to the trailing 24h when no `from` is given.
+/// Defaults to the trailing 7d when no `from` is given.
 async fn anomalies_handler(
     State(pool): State<DbPool>,
     Query(params): Query<AnomaliesParams>,
@@ -241,7 +241,7 @@ async fn anomalies_handler(
     use crate::schema::anomalies::dsl as an;
     let limit = params.limit.unwrap_or(200).clamp(1, 1000);
     let from = match params.from.as_deref().map(parse_ts).transpose() {
-        Ok(v) => v.unwrap_or_else(|| Utc::now() - Duration::hours(24)),
+        Ok(v) => v.unwrap_or_else(|| Utc::now() - Duration::days(7)),
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
     let to = match params.to.as_deref().map(parse_ts).transpose() {
