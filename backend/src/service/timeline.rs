@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::db::DbPool;
 use crate::service::ingest::get_watermark;
 
-const TIMELINE_WATERMARK_SOURCE: &str = "timeline_hourly";
+pub const TIMELINE_WATERMARK_SOURCE: &str = "timeline_hourly";
 const TIMELINE_SAFETY_MARGIN_MINS: i64 = 15;
 const MAX_TIMELINE_STEP_HOURS: i64 = 3;
 

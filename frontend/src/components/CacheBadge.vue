@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { fetchCacheMeta, type CacheClass, type CacheClassMeta } from '../ssumgmt/api';
-import { fmtCacheInterval } from '../ssumgmt/format';
+import { fmtCacheInterval, fmtLag } from '../ssumgmt/format';
 
 const props = defineProps<{ kind: CacheClass }>();
 
@@ -28,6 +28,10 @@ const lines = computed(() => {
   if (meta.value) {
     out.push(`refreshed ~every ${fmtCacheInterval(meta.value.refresh_secs)}`);
     out.push(`may trail live by up to ~${fmtCacheInterval(meta.value.max_stale_secs)}`);
+    const wm = meta.value.watermarks ?? [];
+    for (const w of wm) {
+      out.push(wm.length > 1 ? `${w.label} ${fmtLag(w.last_event_at)}` : `currently ${fmtLag(w.last_event_at)}`);
+    }
   } else {
     out.push('not a live figure');
   }
@@ -37,6 +41,11 @@ const lines = computed(() => {
 const tip = ref<{ x: number; y: number } | null>(null);
 function show(e: MouseEvent) {
   tip.value = { x: e.clientX, y: e.clientY };
+  fetchCacheMeta()
+    .then((m) => {
+      meta.value = m.caches[props.kind] ?? null;
+    })
+    .catch(() => {});
 }
 function hide() {
   tip.value = null;

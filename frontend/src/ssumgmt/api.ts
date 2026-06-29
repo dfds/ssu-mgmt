@@ -1035,11 +1035,18 @@ export function unresolveAlert(id: number): Promise<void> {
 
 export type CacheClass = 'siem' | 'entity_stats' | 'identity_context' | 'timeline' | 'guardduty';
 
+export interface WatermarkLag {
+  label: string;
+  last_event_at: string | null;
+}
+
 export interface CacheClassMeta {
   /** How often the backing cache/derived table is recomputed. */
   refresh_secs: number;
   /** Worst-case lag behind live (refresh cadence + any watermark margin). */
   max_stale_secs: number;
+  /** Live `last_event_at` of the backing watermark(s); absent for caches with none. */
+  watermarks?: WatermarkLag[];
 }
 
 export interface CacheMeta {
@@ -1050,16 +1057,18 @@ export interface CacheMeta {
 }
 
 let cacheMetaPromise: Promise<CacheMeta> | null = null;
+let cacheMetaAt = 0;
 
-/** Fetch the cache-cadence metadata once and share it across all badges. */
-export function fetchCacheMeta(): Promise<CacheMeta> {
-  if (!cacheMetaPromise) {
+export function fetchCacheMeta(maxAgeMs = 30_000): Promise<CacheMeta> {
+  if (!cacheMetaPromise || Date.now() - cacheMetaAt > maxAgeMs) {
+    cacheMetaAt = Date.now();
     cacheMetaPromise = (async () => {
       const res = await apiFetch('/api/meta');
       return (await res.json()) as CacheMeta;
     })().catch((e) => {
       // Don't cache a failure — let the next badge retry.
       cacheMetaPromise = null;
+      cacheMetaAt = 0;
       throw e;
     });
   }

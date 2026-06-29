@@ -9,7 +9,7 @@ use crate::service::siem::geoip::GeoIp;
 
 const ACTIVE_WINDOW_MINS: i64 = 15;
 
-const SESSIONS_WATERMARK_SOURCE: &str = "siem_sessions";
+pub const SESSIONS_WATERMARK_SOURCE: &str = "siem_sessions";
 const SESSIONS_SAFETY_MARGIN_MINS: i64 = 15;
 const MAX_SESSIONS_STEP_HOURS: i64 = 3;
 const SESSIONS_UPSERT_CHUNK: usize = 1000;

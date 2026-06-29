@@ -121,6 +121,19 @@ export function fmtCacheInterval(secs: number): string {
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
+export function fmtLag(iso: string | null): string {
+  if (!iso) return 'no data';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return 'no data';
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s behind`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m behind`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m behind` : `${h}h behind`;
+}
+
 export function relAge(iso: string | null): string {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
